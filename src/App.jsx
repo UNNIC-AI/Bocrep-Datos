@@ -104,6 +104,13 @@ const SCHEMAS = {
   },
 };
 
+// La IA de vegades retorna noms en castellà en lloc de català. Normalitza abans de desar.
+const normalizeAIFields = rows => rows.map(row => {
+  const r = { ...row }
+  if ('producto' in r && !('producte' in r)) { r.producte = r.producto; delete r.producto }
+  return r
+})
+
 const CASCADE = ["productes", "recepta", "farcit", "masses", "linies", "flux"];
 
 // Taules amb una columna 'producte': són les que pertanyen a UN producte i es poden refer.
@@ -1014,11 +1021,11 @@ export default function App() {
       );
 
       const parsed = {
-        productes: (res1.productes || []).map(p => ({ ...p, transcripcio: text })),
-        recepta:   res1.recepta   || [],
+        productes: normalizeAIFields((res1.productes || []).map(p => ({ ...p, transcripcio: text }))),
+        recepta:   normalizeAIFields(res1.recepta   || []),
         farcit:    res1.farcit    || [],
         masses:    res1.masses    || [],
-        flux:      res2.flux      || [],
+        flux:      normalizeAIFields(res2.flux      || []),
         linies:    res3.linies    || [],
       };
 
@@ -1161,14 +1168,14 @@ export default function App() {
       const res = await callAI(prompt, "Aplica les modificacions i retorna el JSON del nou producte.", { model: MODEL_REASONING });
 
       const parsed = {
-        productes: (res.productes || []).map(p => ({
+        productes: normalizeAIFields((res.productes || []).map(p => ({
           ...p, producte: newCode,
           transcripcio: `[Duplicat de ${dupSrc}]${modText ? ` ${modText}` : ""}`,
-        })),
-        recepta: (res.recepta || []).map(r => ({ ...r, producte: newCode })),
+        }))),
+        recepta: normalizeAIFields((res.recepta || []).map(r => ({ ...r, producte: newCode }))),
         farcit:  res.farcit || [],
         masses:  res.masses || [],
-        flux:    (res.flux || []).map(f => ({ ...f, producte: newCode })),
+        flux:    normalizeAIFields((res.flux || []).map(f => ({ ...f, producte: newCode }))),
         linies:  [],
       };
 
