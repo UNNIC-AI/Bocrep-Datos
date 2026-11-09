@@ -19,7 +19,10 @@ const SCHEMAS = {
       { key: "codi_farcit",       label: "Codis farcit",               type: "text",   placeholder: "R3055, R3070" },
       { key: "dies_permesos",     label: "Dies permesos (Dll-Dm-Dc)",  type: "text" },
       { key: "incompatible_amb",  label: "Incompatible amb (llista)",   type: "text" },
+      { key: "linies_permeses",   label: "Línies permeses",            type: "text",   placeholder: "Línia 2" },
+      { key: "unitats_per_carro", label: "Unitats per carro",          type: "number" },
       { key: "comentaris",        label: "Comentaris",                 type: "text" },
+      { key: "no_classificat",    label: "Xifres sense lloc",          type: "text" },
       { key: "basat_en",          label: "Basat en",                   type: "text" },
       { key: "transcripcio",      label: "Transcripció",               type: "text",  hidden: true },
     ],
@@ -80,10 +83,18 @@ const SCHEMAS = {
       { key: "codi_intervinent",     label: "Massa / Farcit (codi)",        type: "text",   placeholder: "M2001 / R3055" },
       { key: "linia",                label: "Recurs físic",                 type: "text" },
       { key: "massa",                label: "Massa (kg)",                   type: "number" },
-      { key: "temps_per_kg",         label: "Temps",                        type: "text",   placeholder: "45 min / 150kg" },
+      { key: "temps_per_kg",         label: "Temps (tal com es diu)",       type: "text",   placeholder: "45 min / 150kg" },
+      { key: "minuts_min",           label: "Minuts (mínim)",               type: "number" },
+      { key: "minuts_max",           label: "Minuts (màxim)",               type: "number" },
+      { key: "temps_quantitat",      label: "Quantitat d'aquests minuts",   type: "number", placeholder: "150" },
+      { key: "temps_unitat",         label: "Unitat de la quantitat",       type: "text",   placeholder: "fix / kg / unitat / caixa / carro" },
       { key: "persones_necessaries", label: "Persones necessàries",         type: "number" },
       { key: "perfils_de_persona",   label: "Perfils de persona",           type: "text" },
       { key: "es_pot_parar",         label: "Es pot parar (sí/no)",         type: "select", options: ["Sí", "No"] },
+      { key: "frequencia",           label: "Freqüència",                   type: "text",   placeholder: "cada_produccio / final_jornada / final_setmana" },
+      { key: "minuts_abans_produccio", label: "Minuts abans de fabricar",   type: "number" },
+      { key: "depen_de_pas",         label: "Depèn del pas",                type: "text",   placeholder: "4, 7" },
+      { key: "alternativa_de",       label: "Alternativa del pas",          type: "number" },
       { key: "prerequisits",         label: "Prerequisits",                 type: "text",   placeholder: "Finalitzar M2001" },
       { key: "comentaris",           label: "Comentaris",                   type: "text" },
     ],
@@ -139,6 +150,24 @@ function recordingsToAdd(products, existing) {
   });
 }
 
+// Xifres d'un text, sense fraccions ni hores (la IA les converteix a minuts) ni números petits
+// (apareixen arreu i no diuen res)
+const significantNumbers = s => new Set(
+  (String(s || '').replace(/\d+\/\d+|\d+:\d+/g, ' ').match(/\d+(?:[.,]\d+)?/g) || [])
+    .map(n => Number(n.replace(',', '.')))
+    .filter(n => n >= 10)
+);
+
+// Frases de la gravació amb alguna xifra que no consta enlloc del que s'ha extret, perquè es
+// puguin revisar. Es fa per codi perquè el resultat no depengui de la IA que s'està comprovant.
+function findUnplaced(text, extracted) {
+  const have = significantNumbers(JSON.stringify(extracted));
+  const missing = String(text || '').split(/(?<!\d)\.|\.(?!\d)|[;\n]+/)
+    .map(s => s.trim())
+    .filter(s => [...significantNumbers(s)].some(n => !have.has(n)));
+  return missing.join("\n") || null;
+}
+
 // Deixa una fila a punt per desar: només columnes conegudes (una clau inventada per la IA faria
 // fallar tota la inserció) i números vàlids. Els valors incorrectes s'afegeixen a 'problems'.
 function prepareRow(table, row, problems) {
@@ -171,6 +200,18 @@ const splitCodes = v =>
 
 // Les tasques de neteja no són recursos propis: es modelen amb el temps_neteja del recurs
 const isCleaningTask = v => /^(limpieza|neteja|netejar|limpiar)\b/.test(normalizeStr(v))
+
+// El catàleg conté noms de tasques ("Etiquetado de cajas") i duplicats amb el tipus entre parèntesis.
+// No s'ofereixen a la IA, perquè els copiaria com si fossin recursos.
+const TASK_AS_RESOURCE = /^(fabricat|preparacion?|desembalar|etiquetado|encaixat|mezcla manual)\b|\s-\s/
+const resourceNamesForPrompt = linies => {
+  const names = [...new Set((linies || []).map(l => l.linia).filter(Boolean))]
+  return names.filter(n => {
+    if (TASK_AS_RESOURCE.test(normalizeStr(n))) return false
+    const withType = /^(.*) \([^)]*\)$/.exec(n)
+    return !(withType && names.includes(withType[1]))
+  })
+}
 
 const singularize = s => {
   if (s.endsWith('es') && s.length > 4) return s.slice(0, -2)
@@ -466,7 +507,9 @@ const DETERMINISM_RULE = `- SIGUES DETERMINISTA: extreu només el que es diu a l
 // a la sortida quan l'usuari no n'ha dictat cap (abans inventava el codi de l'exemple).
 const PLACEHOLDER_RULE = `- PATRONS, NO VALORS: "########", "M####", "R####" i "Màquina #" indiquen NOMÉS el format que
   tenen aquests codis. No són valors reals i no els has de copiar MAI a la sortida. Fes servir
-  únicament els codis que l'usuari ha dictat; si per a un camp no n'ha dictat cap → null.`;
+  únicament els codis que l'usuari ha dictat; si per a un camp no n'ha dictat cap → null.
+- XIFRES DELS EXEMPLES: cap número ni temps dels exemples d'aquest prompt és real. Una dada que no
+  surt a la transcripció → null. No la copiïs dels exemples ni la dedueixis de productes semblants.`;
 
 const PROMPT_PROD_RECEPTA = `Ets un assistent expert en producció alimentària industrial. Treballes per a un sistema d'OPTIMITZACIÓ DE LA PRODUCCIÓ que, a partir de les receptes i els recursos disponibles, optimitza l'ús del personal i les màquines per maximitzar l'eficiència productiva.
 
@@ -517,6 +560,9 @@ Camps i FORMATS exactes:
                                  Si l'usuari dicta noms complets, accepta també "Dimecres-Dijous-Divendres".
 - 'incompatible_amb'   text   → text lliure descrivint productes/famílies incompatibles
                                  (ex: "No es poden fabricar altres crepes salats ni rolls. No es poden fabricar altres farcits amb formatges.")
+- 'linies_permeses'    text   → línies on es pot fabricar el producte, NOMÉS si es dicta una restricció
+                                 (ex: "Línia 2", "Línia 1, Línia 2"). null si no es diu.
+- 'unitats_per_carro'  number → unitats de producte que hi caben a cada carro. null si no es dicta.
 - 'comentaris'         text
 
 ═══════════════════════════════════════════
@@ -595,6 +641,7 @@ EXEMPLE DE FORMAT (els codis hi surten com a PATRONS, no com a valors reals):
     "kg_farcit_palet": 328.01, "codi_farcit": "R####",
     "dies_permesos": "Dc-Dj-Dv",
     "incompatible_amb": "No es poden fabricar altres crepes salats ni rolls.",
+    "linies_permeses": null, "unitats_per_carro": null,
     "comentaris": null
   }],
   "recepta": [{
@@ -636,7 +683,7 @@ const PROMPT_FLUX = `Ets un assistent expert en producció alimentària industri
 L'usuari ha dictat informació sobre el producte "{{PROPOSED_PRODUCTE}}". Extreu tots els PASSOS DEL FLUX DE PRODUCCIÓ.
 
 FLUX (1 fila per pas de fabricació — ha de descriure TOT el procés de principi a fi):
-producte, pas, dia, accio, codi_intervinent, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
+producte, pas, dia, accio, codi_intervinent, linia, massa, temps_per_kg, minuts_min, minuts_max, temps_quantitat, temps_unitat, persones_necessaries, perfils_de_persona, es_pot_parar, frequencia, minuts_abans_produccio, depen_de_pas, alternativa_de, prerequisits, comentaris
 
 Recursos (màquines/zones/equips) disponibles al sistema: {{EXISTING_RESOURCES}}
 
@@ -648,18 +695,33 @@ CAMPS I FORMATS:
 ═══════════════════════════════════════════
 - 'producte'             text   → MATEIX codi de producte a TOTES les files (format ########).
 - 'pas'                  number → índex seqüencial global del pas (1, 2, 3...). Cada pas té un número únic. Serveix per ordenar.
-- 'dia'                  number → dia real del cicle de producció (ex: 1, 2). El mateix dia agrupa múltiples passos. Si no es menciona, dedueix-lo de l'ordre lògic.
+- 'dia'                  number → dia RELATIU al dia de fabricació. 0 = el dia que el producte passa per la línia. -1 = el dia anterior, -2 = dos dies abans, 1 = l'endemà.
+                                   El mateix dia agrupa múltiples passos. Totes les fases del dia de fabricació (arrencada, fabricat, túnel, encaixat, neteja) són dia 0 si no es diu el contrari.
+                                   "2 días antes de la producción" → -2. Si es dicta un marge ("com a molt tard el dia abans", "dos o tres dies abans"), posa el dia MÉS TARDÀ permès i copia el marge a 'comentaris'.
+                                   "al día siguiente" o "el día de la cocción" es refereixen a la fase de què s'està parlant: situa'ls respecte a la fabricació. Si no es menciona, dedueix-lo de l'ordre lògic.
 - 'accio'                text   → QUÈ es fa en aquest pas, en poques paraules (ex: "Mesclar farcit", "Fregir", "Preparació de carros", "Neteja Olla mediana", "Encaixat / Paletització"). Obligatori a TOTES les files.
 - 'codi_intervinent'     text   → codi de la matèria principal del pas, format M#### o R####.
                                    Si el pas és una variant del mateix codi (neteja, subtasca), pots afegir sufix decimal: "M####.1", "M####.2".
                                    null si el pas no està lligat a una matèria/farcit concret (ex: "Preparació de carros", "Encaixat / Paletització").
 - 'linia'                text   → NOMÉS el nom del recurs físic (màquina, zona, equip) que s'OCUPA en aquest pas (ex: "Olla mediana", "Freidora", "Turmix Grande / Balança"). El nom de la tasca va a 'accio', mai aquí.
+                                   Si el recurs ja és a la llista de recursos disponibles, escriu-lo EXACTAMENT igual. Preparar carros, etiquetar o desembalar són tasques: si no ocupen cap màquina, 'linia' → null.
                                    null si el pas no ocupa cap recurs físic concret (esperes, controls, administratiu).
 - 'massa'                number → kg de massa/farcit del producte que intervenen en aquest pas. null si no aplica.
-- 'temps_per_kg'         text   → TEXT LLIURE amb el temps real expressat tal com es diu (ex: "45 minuts / 150 kg", "15 minuts", "1400 unidades / hora", "180 minutos", "68 cajas / hora", "15 minutos / 75 cajas"). null si no s'especifica.
-- 'persones_necessaries' number → nombre de persones (ex: 1, 3, 0).
-- 'perfils_de_persona'   text   → tipus de personal (ex: "Cocinero", "Cocinero / Directa", "Encarregat / Indirecte / Directa", "Qualsevol").
-- 'es_pot_parar'         text   → "Sí" si el procés es pot interrompre, "No" si ha de ser continu.
+- 'temps_per_kg'         text   → el temps TAL COM ES DIU, sense interpretar-lo (ex: "## minuts / ### kg", "## minuts", "### unidades / hora", "de 30 a 45 minuts"). null si no s'especifica.
+- 'minuts_min'           number → el mateix temps convertit a MINUTS. "1/4 d'hora" = 15, "3/4" = 45, "1:30 h" = 90.
+- 'minuts_max'           number → igual que minuts_min si és un sol valor. Si és un marge ("de mitja hora a 3/4"): minuts_min = 30 i minuts_max = 45.
+- 'temps_quantitat'      number → quantitat a què corresponen aquests minuts. "45 minuts / 150 kg" → 150. "75 cajas / hora" → minuts 60 i quantitat 75. null si el temps és fix.
+- 'temps_unitat'         text   → unitat de la quantitat. NOMÉS un d'aquests valors: "fix" (no depèn de cap quantitat), "kg", "unitat", "caixa", "carro", "container", "bandeja", "palet".
+                                   Si no s'ha dictat cap temps: temps_per_kg, minuts_min, minuts_max, temps_quantitat i temps_unitat → null.
+- 'persones_necessaries' number → nombre de persones (ex: 1, 3). 0 NOMÉS si el pas passa sol sense ningú (túnel, espera). null si no es diu.
+- 'perfils_de_persona'   text   → tipus de personal. NOMÉS aquests noms, amb aquesta grafia: "Cocinero", "Directa", "Directa formada", "Encarregat", "Responsable de línia", "Almacenero", "Indirecte", "Manipuladora", "Qualsevol".
+                                   Separats per " / " vol dir que ho pot fer QUALSEVOL d'ells. "Encargado" → "Encarregat". null si no es diu.
+- 'es_pot_parar'         text   → "Sí" si el procés es pot interrompre, "No" si ha de ser continu. null si no es dicta ni es desprèn clarament.
+- 'frequencia'           text   → quan cal fer el pas. NOMÉS un d'aquests valors: "cada_produccio", "final_jornada", "final_setmana", "altres" (explica-ho a 'comentaris').
+                                   Divendres o "a final de semana" → "final_setmana". Si no es diu res → "cada_produccio".
+- 'minuts_abans_produccio' number → minuts d'antelació respecte a l'INICI de la fabricació, si es dicten ("1:30 h antes de la producción" → 90). Si és un marge, el valor més gran. null si no es diu.
+- 'depen_de_pas'         text   → números de 'pas' d'aquesta mateixa llista que han d'estar acabats abans, separats per comes (ex: "4, 7"). Omple-ho quan el prerequisit es correspongui amb un pas concret. null si no depèn de cap.
+- 'alternativa_de'       number → si aquest pas és una ALTRA MANERA de fer el mateix pas (amb un altre equip o una altra velocitat, i es fa una o l'altra, mai totes dues), el número de 'pas' de la primera opció. A la primera opció i a la resta de passos → null.
 - 'prerequisits'         text   → TEXT LLIURE descrivint què ha d'estar acabat abans (ex: "Finalitzar M####", "Aigua a 90 graus", "Mezcla R#### acabada", "Producció acabada", "Línia neta i muntada"). null si no depèn de res.
 - 'comentaris'           text   → notes addicionals (ex: "Màxim 60 kg per container", "Batut: mínim 90 kg / màxim 300 kg", "Palet màxim de 180 caixes").
 
@@ -668,12 +730,13 @@ EXEMPLE DE FORMAT (els codis hi surten com a PATRONS, no com a valors reals):
 ═══════════════════════════════════════════
 {
   "flux": [
-    { "producte": "########", "pas": 1, "dia": 1, "accio": "Cocció",                "codi_intervinent": "M####",   "linia": "Olla mediana",                        "massa": 150, "temps_per_kg": "45 minuts / 150 kg",   "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null },
-    { "producte": "########", "pas": 2, "dia": 1, "accio": "Neteja Olla mediana",   "codi_intervinent": "M####.1", "linia": "Olla mediana",                        "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M####",          "comentaris": null },
-    { "producte": "########", "pas": 3, "dia": 1, "accio": "Neteja containers",     "codi_intervinent": "M####.2", "linia": "Containers",                          "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M####",          "comentaris": "Màxim 60 kg per container" },
-    { "producte": "########", "pas": 8, "dia": 1, "accio": "Preparació de carros",  "codi_intervinent": null,      "linia": null,                                  "massa": null,"temps_per_kg": "40 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Qualsevol",               "es_pot_parar": "Sí", "prerequisits": null,                       "comentaris": "20 minuts per carro" },
-    { "producte": "########", "pas": 9, "dia": 2, "accio": "Mescla manual (remo)",  "codi_intervinent": "R####",   "linia": null,                                  "massa": null,"temps_per_kg": "60 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "Sí", "prerequisits": "Afegir Ricotta",            "comentaris": "18 minuts per container" },
-    { "producte": "########", "pas": 13, "dia": 2, "accio": "Fabricat producte",     "codi_intervinent": null,     "linia": "Túnel",                               "massa": null,"temps_per_kg": "1400 unidades / hora",  "persones_necessaries": 3, "perfils_de_persona": "Encarregat / Indirecte / Directa", "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null }
+    { "producte": "########", "pas": 1, "dia": -1, "accio": "Cocció", "codi_intervinent": "M####", "linia": "Olla mediana", "massa": 150, "temps_per_kg": "## minuts / ### kg", "minuts_min": 45, "minuts_max": 45, "temps_quantitat": 150, "temps_unitat": "kg", "persones_necessaries": 1, "perfils_de_persona": "Cocinero", "es_pot_parar": "No", "frequencia": "cada_produccio", "minuts_abans_produccio": null, "depen_de_pas": null, "alternativa_de": null, "prerequisits": null, "comentaris": null },
+    { "producte": "########", "pas": 2, "dia": -1, "accio": "Neteja Olla mediana", "codi_intervinent": "M####.1", "linia": "Olla mediana", "massa": null, "temps_per_kg": "## minuts", "minuts_min": 15, "minuts_max": 15, "temps_quantitat": null, "temps_unitat": "fix", "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa", "es_pot_parar": "Sí", "frequencia": "cada_produccio", "minuts_abans_produccio": null, "depen_de_pas": "1", "alternativa_de": null, "prerequisits": "Finalitzar M####", "comentaris": null },
+    { "producte": "########", "pas": 3, "dia": 0, "accio": "Batut de massa", "codi_intervinent": "M####", "linia": "Turmix Grande / Balança", "massa": null, "temps_per_kg": "de ## a ## minuts", "minuts_min": 30, "minuts_max": 45, "temps_quantitat": null, "temps_unitat": "fix", "persones_necessaries": 1, "perfils_de_persona": "Cocinero", "es_pot_parar": "No", "frequencia": "cada_produccio", "minuts_abans_produccio": 90, "depen_de_pas": null, "alternativa_de": null, "prerequisits": "## abans de la producció", "comentaris": "Màxim ## kg per container" },
+    { "producte": "########", "pas": 4, "dia": 0, "accio": "Fabricat producte", "codi_intervinent": null, "linia": "Línia #", "massa": null, "temps_per_kg": "### unidades / hora", "minuts_min": 60, "minuts_max": 60, "temps_quantitat": 999, "temps_unitat": "unitat", "persones_necessaries": 3, "perfils_de_persona": "Directa", "es_pot_parar": "No", "frequencia": "cada_produccio", "minuts_abans_produccio": null, "depen_de_pas": "3", "alternativa_de": null, "prerequisits": "Massa a línia", "comentaris": null },
+    { "producte": "########", "pas": 5, "dia": 0, "accio": "Encaixat", "codi_intervinent": null, "linia": "Encaixadora", "massa": null, "temps_per_kg": "## cajas / hora", "minuts_min": 60, "minuts_max": 60, "temps_quantitat": 75, "temps_unitat": "caixa", "persones_necessaries": 1, "perfils_de_persona": "Directa", "es_pot_parar": "Sí", "frequencia": "cada_produccio", "minuts_abans_produccio": null, "depen_de_pas": "4", "alternativa_de": null, "prerequisits": "Producte congelat", "comentaris": null },
+    { "producte": "########", "pas": 6, "dia": 0, "accio": "Encaixat", "codi_intervinent": null, "linia": "Encaixadora", "massa": null, "temps_per_kg": "### cajas / hora", "minuts_min": 60, "minuts_max": 60, "temps_quantitat": 150, "temps_unitat": "caixa", "persones_necessaries": 2, "perfils_de_persona": "Directa", "es_pot_parar": "Sí", "frequencia": "cada_produccio", "minuts_abans_produccio": null, "depen_de_pas": "4", "alternativa_de": 5, "prerequisits": "Producte congelat", "comentaris": null },
+    { "producte": "########", "pas": 7, "dia": 0, "accio": "Neteja circuit", "codi_intervinent": null, "linia": null, "massa": null, "temps_per_kg": "mitja hora", "minuts_min": 30, "minuts_max": 30, "temps_quantitat": null, "temps_unitat": "fix", "persones_necessaries": 1, "perfils_de_persona": "Encarregat", "es_pot_parar": "Sí", "frequencia": "final_setmana", "minuts_abans_produccio": null, "depen_de_pas": null, "alternativa_de": null, "prerequisits": null, "comentaris": null }
   ]
 }
 
@@ -683,6 +746,7 @@ REGLES:
 - MÚLTIPLES RECURSOS PARAL·LELS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs (mateix 'producte', 'pas', 'dia' i 'codi_intervinent').
 - SUBPASSOS d'una mateixa matèria primera: usa sufix decimal al codi_intervinent (M#### → M####.1, M####.2...). El 'pas' segueix sent un índex global únic.
 - Inclou SEMPRE un pas final que representi la sortida/producte acabat (ex: "Encaixat / Paletització").
+- CAP DADA PERDUDA: abans de respondre, repassa la gravació frase per frase. Tot detall del procés sense camp propi va als 'comentaris' del pas on correspongui, amb les seves xifres: composició i capacitats (bandejas per carro, kg per container), límits ("més no es pot augmentar"), qui fa cada subtasca i característiques del producte que afectin el procés.
 ${PLACEHOLDER_RULE}
 ${DETERMINISM_RULE}
 - Retorna ÚNICAMENT: {"flux":[...]}. Cap markdown, cap text extra.
@@ -768,6 +832,9 @@ INSTRUCCIONS:
 - Mateixa regla per a la massa: si l'usuari canvia el codi_massa, actualitza'l a productes i recepta i genera les files de masses si en descriu la composició. Si NO el canvia, retorna masses:[] perquè es reutilitza la mateixa M####.
 - Un producte pot tenir DIVERSES masses i DIVERSOS farcits: a recepta, cada fila és una combinació (producte + codi_farcit + codi_massa). Conserva totes les combinacions del base i afegeix-ne o modifica'n només les que l'usuari indiqui. A productes, els camps codi_massa i codi_farcit poden portar diversos codis separats per comes.
 - Els números segueixen les mateixes regles de format que als prompts de veu (decimals per merma, etc.).
+- Conserva TOTS els camps de cada fila del base, també els de temps (minuts_min, minuts_max, temps_quantitat, temps_unitat), frequencia, minuts_abans_produccio, depen_de_pas i alternativa_de, i la numeració de 'pas'.
+- Si canvien els kg, les unitats o les caixes: actualitza 'massa' i els 'comentaris' que citin aquestes xifres. Si es dicta una altra velocitat o un altre temps, actualitza 'temps_per_kg' i els camps de temps. No recalculis cap temps que no s'hagi dictat.
+- Si es dicten les unitats per carro o una restricció de línia, actualitza 'unitats_per_carro' i 'linies_permeses'.
 
 Retorna ÚNICAMENT: {"productes":[...],"recepta":[...],"farcit":[...],"masses":[...],"flux":[...]}
 Cap markdown, cap text extra. Numèrics no mencionats → null. Textos → null.`;
@@ -1037,8 +1104,7 @@ export default function App() {
     setParsing(true);
 
     const existingProducts = src.productes.map(p => p.producte).filter(Boolean).join(", ") || "(cap)";
-    const existingResources = src.linies.filter(l => l.linia)
-      .map(l => l.tipus ? `${l.linia} (${l.tipus})` : l.linia).join(", ") || "(cap)";
+    const existingResources = resourceNamesForPrompt(src.linies).join(", ") || "(cap)";
 
     try {
       // Crida 1: Producte + Recepta + Farcit
@@ -1078,8 +1144,10 @@ export default function App() {
         text
       );
 
+      const noClassificat = findUnplaced(text, { ...res1, flux: res2.flux || [], linies: res3.linies || [] });
+
       const parsed = {
-        productes: own((res1.productes || []).map(p => ({ ...p, transcripcio: text }))),
+        productes: own((res1.productes || []).map((p, i) => ({ ...p, transcripcio: text, no_classificat: i === 0 ? noClassificat : null }))),
         recepta:   own(res1.recepta   || []),
         farcit:    res1.farcit    || [],
         masses:    res1.masses    || [],
@@ -1280,10 +1348,11 @@ export default function App() {
     // Duplicar també és raonament estructural (quins codis es reutilitzen i quins canvien).
     // La sortida inclou tot el flux del base: mateix marge que la crida de flux per no truncar-la.
     const res = await callAI(prompt, "Aplica les modificacions i retorna el JSON del nou producte.", { model: MODEL_REASONING, maxTokens: 32000 });
+    const noClassificat = findUnplaced(modText, res);
 
     const parsed = {
       productes: normalizeAIFields((res.productes || []).map(p => ({
-        ...p, producte: newCode, basat_en: base,
+        ...p, producte: newCode, basat_en: base, no_classificat: noClassificat,
         transcripcio: transcripcio ?? `[Duplicat de ${base}]${modText ? ` ${modText}` : ""}`,
       }))),
       recepta: normalizeAIFields((res.recepta || []).map(r => ({ ...r, producte: newCode }))),

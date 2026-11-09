@@ -63,6 +63,9 @@ Unitats implícites: pes en kg o g segons el nom de la columna, temps en minuts,
 | `codi_massa`, `codi_farcit` | text | **Llista** de codis separats per comes (`M0002, M0007`) |
 | `dies_permesos` | text | `Dc-Dj-Dv` o noms complets |
 | `incompatible_amb` | text | Text lliure |
+| `linies_permeses` | text | Línies on es pot fabricar, si la gravació ho restringeix |
+| `unitats_per_carro` | numeric | Unitats que hi caben a cada carro |
+| `no_classificat` | text | Frases de la gravació amb alguna xifra que no consta enlloc. Es calcula per codi, i només compara xifres |
 | `comentaris` | text | |
 | `transcripcio` | text | Totes les gravacions del producte, una darrere l'altra. Oculta a la taula, es veu amb 📄 |
 | `basat_en` | text | Codi del producte base si és una variant. La variant manté totes les seves files |
@@ -105,15 +108,22 @@ Identitat a l'app: `producte` + `dia` + `pas` + `linia`; si falta `pas`, `produc
 |---|---|---|
 | `producte` | text | Codi del producte |
 | `pas` | integer | Índex global i ordre del pas |
-| `dia` | numeric | Dia del cicle de producció |
+| `dia` | numeric | Dia relatiu a la fabricació: 0 és el dia de línia, -1 el dia anterior, 1 l'endemà. Les files antigues poden seguir una altra numeració |
 | `accio` | text | Què es fa en aquest pas |
 | `codi_intervinent` | text | Matèria principal del pas, o null si és administratiu |
 | `linia` | text | Recurs físic ocupat, o null. Les files antigues poden tenir-hi el nom de la tasca |
 | `massa` | numeric | Kg que intervenen en el pas |
-| `temps_per_kg` | text | Text lliure: `45 minuts / 150 kg`, `1400 unidades / hora` |
-| `persones_necessaries` | numeric | |
-| `perfils_de_persona` | text | Text lliure: `Cocinero / Directa` |
+| `temps_per_kg` | text | El temps tal com es dicta: `45 minuts / 150 kg`, `75 cajas / hora` |
+| `minuts_min`, `minuts_max` | numeric | El temps en minuts. Iguals si és un sol valor, diferents si és un marge |
+| `temps_quantitat` | numeric | Quantitat a què corresponen els minuts. Null si el temps és fix |
+| `temps_unitat` | text | `fix`, `kg`, `unitat`, `caixa`, `carro`, `container`, `bandeja` o `palet` |
+| `persones_necessaries` | numeric | 0 només si el pas passa sol (túnel, espera) |
+| `perfils_de_persona` | text | Llista tancada. `A / B` vol dir que ho pot fer qualsevol dels dos |
 | `es_pot_parar` | text | `Sí` / `No` |
+| `frequencia` | text | `cada_produccio`, `final_jornada`, `final_setmana` o `altres` |
+| `minuts_abans_produccio` | numeric | Antelació respecte a l'inici de la fabricació |
+| `depen_de_pas` | text | Números de `pas` que han d'estar acabats abans: `4, 7` |
+| `alternativa_de` | integer | Pas del qual aquesta fila és una altra manera de fer-lo: es fa l'una o l'altra |
 | `prerequisits` | text | Text lliure: `Finalitzar M2001` |
 | `comentaris` | text | Límits tècnics i notes |
 

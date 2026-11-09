@@ -18,7 +18,10 @@ create table if not exists productes (
   codi_farcit         text,
   dies_permesos       text,
   incompatible_amb    text,
+  linies_permeses     text,
+  unitats_per_carro   numeric,
   comentaris          text,
+  no_classificat      text,
   transcripcio        text,
   basat_en            text
 );
@@ -85,9 +88,17 @@ create table if not exists flux (
   linia                 text,
   massa                 numeric,
   temps_per_kg          text,
+  minuts_min            numeric,
+  minuts_max            numeric,
+  temps_quantitat       numeric,
+  temps_unitat          text,
   persones_necessaries  numeric,
   perfils_de_persona    text,
   es_pot_parar          text,
+  frequencia            text,
+  minuts_abans_produccio numeric,
+  depen_de_pas          text,
+  alternativa_de        integer,
   prerequisits          text,
   comentaris            text
 );
@@ -127,12 +138,23 @@ ALTER TABLE flux ADD COLUMN IF NOT EXISTS accio text;
 ALTER TABLE flux ADD COLUMN IF NOT EXISTS pas integer;
 ALTER TABLE flux ADD COLUMN IF NOT EXISTS massa numeric;
 ALTER TABLE flux ADD COLUMN IF NOT EXISTS codi_intervinent text;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS minuts_min numeric;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS minuts_max numeric;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS temps_quantitat numeric;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS temps_unitat text;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS frequencia text;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS minuts_abans_produccio numeric;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS depen_de_pas text;
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS alternativa_de integer;
 -- Canvi de tipus de temps_per_kg (numèric → text per acceptar "45 min / 150 kg")
 ALTER TABLE flux ALTER COLUMN temps_per_kg TYPE text USING temps_per_kg::text;
 
 -- PRODUCTES
 ALTER TABLE productes ADD COLUMN IF NOT EXISTS transcripcio text;
 ALTER TABLE productes ADD COLUMN IF NOT EXISTS basat_en text;
+ALTER TABLE productes ADD COLUMN IF NOT EXISTS linies_permeses text;
+ALTER TABLE productes ADD COLUMN IF NOT EXISTS unitats_per_carro numeric;
+ALTER TABLE productes ADD COLUMN IF NOT EXISTS no_classificat text;
 -- Els productes creats amb "Copiar" porten el producte base a la transcripció
 UPDATE productes
    SET basat_en = substring(transcripcio from '^\[Duplicat de ([^\]]+)\]')
