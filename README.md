@@ -115,6 +115,9 @@ produccio-veu/
 ├── supabase-schema.sql     ← SQL per crear les taules
 ├── .env.example            ← plantilla de variables d'entorn
 ├── .gitignore
+├── docs/
+│   ├── model-de-dades.md          ← com es guarden productes i receptes
+│   └── revisio-model-de-dades.md  ← revisió: problemes i propostes
 └── src/
     ├── main.jsx            ← punt d'entrada React
     ├── App.jsx             ← component principal (UI + veu + IA)

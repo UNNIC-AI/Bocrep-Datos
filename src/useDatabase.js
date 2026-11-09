@@ -9,6 +9,7 @@ const TABLE_MAP = {
   linies: 'linies',
   flux: 'flux',
   torns: 'torns',
+  gravacions: 'gravacions',
 }
 
 // Fields that must never be sent to the DB
@@ -61,7 +62,8 @@ export function useDatabase() {
     if (!supabase) {
       try {
         const saved = localStorage.getItem('produccio_data')
-        if (saved) setData(JSON.parse(saved))
+        // Les dades desades abans poden no tenir totes les taules
+        if (saved) setData(prev => ({ ...prev, ...JSON.parse(saved) }))
       } catch {}
       setLoading(false)
       return
@@ -190,8 +192,10 @@ export function useDatabase() {
     return merged
   }, []) // no [data] dependency — we read live from Supabase instead
 
-  // Update a single cell
-  const updateCell = useCallback(async (tableKey, rowId, field, value) => {
+  // Update a single cell. Returns { error } so the UI can report failures.
+  const updateCell = useCallback(async (tableKey, rowId, field, rawValue) => {
+    // Empty string → null so PostgreSQL numeric columns don't reject the update
+    const value = rawValue === '' ? null : rawValue
     setData(prev => {
       const rows = prev[tableKey].map(r =>
         (r.id === rowId) ? { ...r, [field]: value } : r
@@ -209,8 +213,12 @@ export function useDatabase() {
         .update({ [field]: value })
         .eq('id', rowId)
 
-      if (error) console.error(`Update error:`, error)
+      if (error) {
+        console.error(`Update error:`, error)
+        return { error: error.message || String(error) }
+      }
     }
+    return { error: null }
   }, [])
 
   // Delete a row
@@ -233,30 +241,32 @@ export function useDatabase() {
     }
   }, [])
 
-  // Delete every row of a table matching a field value, in a single request.
-  // El comptatge de files esborrades el fa qui crida, a partir de 'data'.
-  const deleteWhere = useCallback(async (tableKey, field, value) => {
-    setData(prev => {
-      const next = { ...prev, [tableKey]: prev[tableKey].filter(r => r[field] !== value) }
-      if (!supabase) {
-        try { localStorage.setItem('produccio_data', JSON.stringify(next)) } catch {}
-      }
-      return next
-    })
+  // Delete a set of rows by id, in a single request. L'estat local només canvia si la BD
+  // ha acceptat l'esborrat, perquè qui crida pugui confiar en el resultat.
+  const deleteIds = useCallback(async (tableKey, ids) => {
+    if (!ids.length) return { error: null }
 
     if (supabase) {
       const { error } = await supabase
         .from(TABLE_MAP[tableKey])
         .delete()
-        .eq(field, value)
+        .in('id', ids)
 
       if (error) {
         console.error(`Delete error (${tableKey}):`, error)
         return { error: error.message || String(error) }
       }
     }
+
+    setData(prev => {
+      const next = { ...prev, [tableKey]: prev[tableKey].filter(r => !ids.includes(r.id)) }
+      if (!supabase) {
+        try { localStorage.setItem('produccio_data', JSON.stringify(next)) } catch {}
+      }
+      return next
+    })
     return { error: null }
   }, [])
 
-  return { data, loading, insertRows, mergeRow, updateCell, deleteRow, deleteWhere, reload: loadAll }
+  return { data, loading, insertRows, mergeRow, updateCell, deleteRow, deleteIds, reload: loadAll }
 }

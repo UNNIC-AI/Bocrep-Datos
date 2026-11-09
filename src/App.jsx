@@ -20,6 +20,7 @@ const SCHEMAS = {
       { key: "dies_permesos",     label: "Dies permesos (Dll-Dm-Dc)",  type: "text" },
       { key: "incompatible_amb",  label: "Incompatible amb (llista)",   type: "text" },
       { key: "comentaris",        label: "Comentaris",                 type: "text" },
+      { key: "basat_en",          label: "Basat en",                   type: "text" },
       { key: "transcripcio",      label: "Transcripció",               type: "text",  hidden: true },
     ],
   },
@@ -33,6 +34,8 @@ const SCHEMAS = {
       { key: "codi_massa",              label: "Codi massa",           type: "text" },
       { key: "grams_per_unit_massa",    label: "Grams/unitat massa",   type: "number" },
       { key: "merma_massa",             label: "Merma massa",          type: "number" },
+      { key: "kg_farcit_palet",         label: "Kg farcit / palet",    type: "number" },
+      { key: "kg_massa_palet",          label: "Kg massa / palet",     type: "number" },
       { key: "comentaris",              label: "Comentaris",           type: "text" },
     ],
   },
@@ -73,6 +76,7 @@ const SCHEMAS = {
       { key: "producte",             label: "Producte",                     type: "text",   req: true },
       { key: "pas",                  label: "Pas (índex)",                  type: "number" },
       { key: "dia",                  label: "Dia del cicle",                type: "number" },
+      { key: "accio",                label: "Què es fa",                    type: "text",   placeholder: "Preparació de carros" },
       { key: "codi_intervinent",     label: "Massa / Farcit (codi)",        type: "text",   placeholder: "M2001 / R3055" },
       { key: "linia",                label: "Recurs físic",                 type: "text" },
       { key: "massa",                label: "Massa (kg)",                   type: "number" },
@@ -117,6 +121,41 @@ const CASCADE = ["productes", "recepta", "farcit", "masses", "linies", "flux"];
 // farcit, masses i linies no hi són perquè són catàlegs compartits entre productes.
 const PER_PRODUCT_TABLES = ["productes", "recepta", "flux"];
 
+// Separador entre gravacions d'un mateix producte dins de productes.transcripcio
+const RECORDING_SEP = "\n\n";
+
+// Un producte creat amb "Copiar" porta el seu base a l'inici de la transcripció
+const parseVariantMarker = text => {
+  const m = /^\[Duplicat de ([^\]]+)\]\s*([\s\S]*)$/.exec(String(text || '').trim());
+  return m ? { base: m[1].trim(), diff: m[2].trim() } : null;
+};
+
+// Descripcions que encara no consten a la taula de gravacions
+function recordingsToAdd(products, existing) {
+  return products.filter(p => p.transcripcio).flatMap(p => {
+    const texts = (existing || []).filter(g => g.producte === p.producte).map(g => g.text);
+    if (texts.includes(p.transcripcio) || texts.join(RECORDING_SEP) === p.transcripcio) return [];
+    return [{ producte: p.producte, text: p.transcripcio }];
+  });
+}
+
+// Deixa una fila a punt per desar: només columnes conegudes (una clau inventada per la IA faria
+// fallar tota la inserció) i números vàlids. Els valors incorrectes s'afegeixen a 'problems'.
+function prepareRow(table, row, problems) {
+  const out = { _action: row._action, _existingId: row._existingId };
+  for (const f of SCHEMAS[table].fields) {
+    let v = row[f.key];
+    if (v === undefined) continue;
+    if (f.type === "number" && typeof v === "string" && v.trim() !== "") {
+      const n = Number(v.trim().replace(",", "."));
+      if (Number.isNaN(n)) { problems.push(`${SCHEMAS[table].label}: «${f.label}» no és un número («${v}»)`); continue; }
+      v = n;
+    }
+    out[f.key] = v;
+  }
+  return out;
+}
+
 /* ══════════════════════════════════════════════════════════════
    ENTITY RESOLUTION — normalitza noms proposats contra la BD
    ══════════════════════════════════════════════════════════════ */
@@ -157,6 +196,8 @@ const fuzzyMatch = (a, b) => {
   const na = normalizeStr(a), nb = normalizeStr(b)
   if (!na || !nb) return false
   if (na === nb) return true
+  // Els números identifiquen: "Màquina 1" i "Màquina 4", o M2001 i M2002, són coses diferents
+  if (na.replace(/\D/g, '') !== nb.replace(/\D/g, '')) return false
   if (singularize(na) === singularize(nb)) return true
   if (na.length >= 4 && nb.length >= 4 && levenshtein(na, nb) <= 2) return true
   return false
@@ -191,16 +232,6 @@ const ENTITY_DEFS = [
       },
     ],
   },
-  {
-    // codi_nom_mp pot ser un codi (M####) o un nom comú (Ricotta) → fuzzyMatch per noms
-    table: 'farcit', keyField: 'codi_nom_mp', matchFn: fuzzyMatch,
-    refs: [],
-  },
-  {
-    // Mateixa lògica que farcit: la matèria primera d'una massa pot dictar-se pel nom
-    table: 'masses', keyField: 'codi_nom_mp', matchFn: fuzzyMatch,
-    refs: [],
-  },
 ]
 
 // Taules secundàries: com detectar si una fila ja existeix
@@ -214,8 +245,11 @@ const SECONDARY_CHECKS = [
       if (!exactMatch(row.producte, existing.producte)) return false
       // Cal com a mínim un dels dos codis per poder identificar la fila
       if (!row.codi_farcit && !row.codi_massa) return false
-      return normalizeStr(row.codi_farcit || '') === normalizeStr(existing.codi_farcit || '')
-        && normalizeStr(row.codi_massa || '') === normalizeStr(existing.codi_massa || '')
+      // Un codi buit en un costat és compatible: la fila es va completant en gravacions successives
+      const compatible = (a, b) => !a || !b || exactMatch(a, b)
+      return compatible(row.codi_farcit, existing.codi_farcit)
+        && compatible(row.codi_massa, existing.codi_massa)
+        && (exactMatch(row.codi_farcit, existing.codi_farcit) || exactMatch(row.codi_massa, existing.codi_massa))
     },
   },
   {
@@ -237,15 +271,20 @@ const SECONDARY_CHECKS = [
       fuzzyMatch(row.codi_nom_mp, existing.codi_nom_mp),
   },
   {
-    // Flux: 1 fila per (producte + pas). Fallback: (producte + dia + codi_intervinent)
-    // producte és un codi únic → exactMatch; codi_intervinent és un codi → exactMatch
+    // Flux: 1 fila per (producte + dia + pas + recurs). Un mateix 'pas' pot tenir diverses files
+    // (recursos paral·lels) i cada gravació pot tornar a numerar, per tant el número sol no identifica.
+    // Sense número, fallback a (producte + dia + codi_intervinent + recurs).
     table: 'flux',
     matchFn: (row, existing) => {
       if (!exactMatch(row.producte, existing.producte)) return false
+      if (String(row.dia ?? '') !== String(existing.dia ?? '')) return false
+      const same = (a, b) => (!a && !b) || fuzzyMatch(a, b)
+      if (!same(row.linia, existing.linia)) return false
+      if (row.accio && existing.accio && !fuzzyMatch(row.accio, existing.accio)) return false
       if (row.pas != null && existing.pas != null)
         return String(row.pas) === String(existing.pas)
-      return String(row.dia) === String(existing.dia) &&
-        exactMatch(row.codi_intervinent || '', existing.codi_intervinent || '')
+      return exactMatch(row.codi_intervinent || '', existing.codi_intervinent || '')
+        || (!row.codi_intervinent && !existing.codi_intervinent)
     },
   },
 ]
@@ -283,7 +322,7 @@ function resolveCanonicalNames(parsed, dbData) {
       if (!resolved[ref.table]?.length) continue
       resolved[ref.table] = resolved[ref.table].map(row => {
         const refVal = row[ref.field]
-        if (!refVal) return row
+        if (!refVal && !ref.clearIfUnresolved) return row
         // 1. Coincideix amb una entitat del batch (nova o existent)
         const mapped = mapping[normalizeStr(refVal)]
         if (mapped) return { ...row, [ref.field]: mapped.canonical }
@@ -292,7 +331,9 @@ function resolveCanonicalNames(parsed, dbData) {
         if (directMatch) return { ...row, [ref.field]: directMatch[keyField] }
         // 3. No resolt
         if (ref.clearIfUnresolved) {
-          return { ...row, [ref.field]: '' }
+          // Amb un sol producte al lot no hi ha dubte de a qui pertany la fila
+          const sole = resolved[table]?.length === 1 ? resolved[table][0][keyField] : ''
+          return { ...row, [ref.field]: sole || '' }
         }
         if (ref.autoAdd && !(ref.skipAutoAdd && ref.skipAutoAdd(refVal))) {
           const alreadyInBatch = resolved[table]?.some(e => matchFn(e[keyField], refVal))
@@ -489,6 +530,8 @@ Camps i FORMATS:
 - 'codi_massa'              text   → M####
 - 'grams_per_unit_massa'    number → grams de massa per unitat final (ex: 40)
 - 'merma_massa'             number → DECIMAL entre 0 i 1 (ex: 0.248 = 24.8%)
+- 'kg_farcit_palet'         number → kg per palet d'AQUEST codi_farcit (ex: 328.01). null si no es dicta per separat.
+- 'kg_massa_palet'          number → kg per palet d'AQUESTA codi_massa (ex: 335.01). null si no es dicta per separat.
 - 'comentaris'              text
 
 Regles RECEPTA:
@@ -558,6 +601,7 @@ EXEMPLE DE FORMAT (els codis hi surten com a PATRONS, no com a valors reals):
     "producte": "########", "codi_farcit": "R####",
     "grams_per_unitat_farcit": 72, "merma_farcit": 0.01,
     "codi_massa": "M####", "grams_per_unit_massa": 40, "merma_massa": 0.248,
+    "kg_farcit_palet": 328.01, "kg_massa_palet": 335.01,
     "comentaris": null
   }],
   "farcit": [
@@ -592,9 +636,12 @@ const PROMPT_FLUX = `Ets un assistent expert en producció alimentària industri
 L'usuari ha dictat informació sobre el producte "{{PROPOSED_PRODUCTE}}". Extreu tots els PASSOS DEL FLUX DE PRODUCCIÓ.
 
 FLUX (1 fila per pas de fabricació — ha de descriure TOT el procés de principi a fi):
-producte, pas, dia, codi_intervinent, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
+producte, pas, dia, accio, codi_intervinent, linia, massa, temps_per_kg, persones_necessaries, perfils_de_persona, es_pot_parar, prerequisits, comentaris
 
 Recursos (màquines/zones/equips) disponibles al sistema: {{EXISTING_RESOURCES}}
+
+Passos ja registrats d'aquest producte: {{EXISTING_STEPS}}
+Si n'hi ha, aquesta gravació els amplia: continua la numeració de 'pas' a partir del més alt i retorna només els passos nous o els que aquesta gravació completi (amb el seu mateix 'pas', 'dia' i 'linia').
 
 ═══════════════════════════════════════════
 CAMPS I FORMATS:
@@ -602,10 +649,11 @@ CAMPS I FORMATS:
 - 'producte'             text   → MATEIX codi de producte a TOTES les files (format ########).
 - 'pas'                  number → índex seqüencial global del pas (1, 2, 3...). Cada pas té un número únic. Serveix per ordenar.
 - 'dia'                  number → dia real del cicle de producció (ex: 1, 2). El mateix dia agrupa múltiples passos. Si no es menciona, dedueix-lo de l'ordre lògic.
+- 'accio'                text   → QUÈ es fa en aquest pas, en poques paraules (ex: "Mesclar farcit", "Fregir", "Preparació de carros", "Neteja Olla mediana", "Encaixat / Paletització"). Obligatori a TOTES les files.
 - 'codi_intervinent'     text   → codi de la matèria principal del pas, format M#### o R####.
                                    Si el pas és una variant del mateix codi (neteja, subtasca), pots afegir sufix decimal: "M####.1", "M####.2".
                                    null si el pas no està lligat a una matèria/farcit concret (ex: "Preparació de carros", "Encaixat / Paletització").
-- 'linia'                text   → nom del recurs físic (màquina, zona, equip) que s'OCUPA en aquest pas (ex: "Olla mediana", "Freidora", "Turmix Grande / Balança").
+- 'linia'                text   → NOMÉS el nom del recurs físic (màquina, zona, equip) que s'OCUPA en aquest pas (ex: "Olla mediana", "Freidora", "Turmix Grande / Balança"). El nom de la tasca va a 'accio', mai aquí.
                                    null si el pas no ocupa cap recurs físic concret (esperes, controls, administratiu).
 - 'massa'                number → kg de massa/farcit del producte que intervenen en aquest pas. null si no aplica.
 - 'temps_per_kg'         text   → TEXT LLIURE amb el temps real expressat tal com es diu (ex: "45 minuts / 150 kg", "15 minuts", "1400 unidades / hora", "180 minutos", "68 cajas / hora", "15 minutos / 75 cajas"). null si no s'especifica.
@@ -620,12 +668,12 @@ EXEMPLE DE FORMAT (els codis hi surten com a PATRONS, no com a valors reals):
 ═══════════════════════════════════════════
 {
   "flux": [
-    { "producte": "########", "pas": 1, "dia": 1, "codi_intervinent": "M####",   "linia": "Olla mediana",                        "massa": 150, "temps_per_kg": "45 minuts / 150 kg",   "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null },
-    { "producte": "########", "pas": 2, "dia": 1, "codi_intervinent": "M####.1", "linia": "Limpieza Olla mediana",               "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M####",          "comentaris": null },
-    { "producte": "########", "pas": 3, "dia": 1, "codi_intervinent": "M####.2", "linia": "Limpieza containers",                 "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M####",          "comentaris": "Màxim 60 kg per container" },
-    { "producte": "########", "pas": 8, "dia": 1, "codi_intervinent": null,      "linia": "Preparació de carros",                "massa": null,"temps_per_kg": "40 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Qualsevol",               "es_pot_parar": "Sí", "prerequisits": null,                       "comentaris": "20 minuts per carro" },
-    { "producte": "########", "pas": 9, "dia": 2, "codi_intervinent": "R####",   "linia": "Mezcla manual (remo)",                "massa": null,"temps_per_kg": "60 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "Sí", "prerequisits": "Afegir Ricotta",            "comentaris": "18 minuts per container" },
-    { "producte": "########", "pas": 13, "dia": 2, "codi_intervinent": null,     "linia": "Fabricat Producte / carros / tunel",  "massa": null,"temps_per_kg": "1400 unidades / hora",  "persones_necessaries": 3, "perfils_de_persona": "Encarregat / Indirecte / Directa", "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null }
+    { "producte": "########", "pas": 1, "dia": 1, "accio": "Cocció",                "codi_intervinent": "M####",   "linia": "Olla mediana",                        "massa": 150, "temps_per_kg": "45 minuts / 150 kg",   "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null },
+    { "producte": "########", "pas": 2, "dia": 1, "accio": "Neteja Olla mediana",   "codi_intervinent": "M####.1", "linia": "Olla mediana",                        "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M####",          "comentaris": null },
+    { "producte": "########", "pas": 3, "dia": 1, "accio": "Neteja containers",     "codi_intervinent": "M####.2", "linia": "Containers",                          "massa": null,"temps_per_kg": "15 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero / Directa",      "es_pot_parar": "Sí", "prerequisits": "Finalitzar M####",          "comentaris": "Màxim 60 kg per container" },
+    { "producte": "########", "pas": 8, "dia": 1, "accio": "Preparació de carros",  "codi_intervinent": null,      "linia": null,                                  "massa": null,"temps_per_kg": "40 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Qualsevol",               "es_pot_parar": "Sí", "prerequisits": null,                       "comentaris": "20 minuts per carro" },
+    { "producte": "########", "pas": 9, "dia": 2, "accio": "Mescla manual (remo)",  "codi_intervinent": "R####",   "linia": null,                                  "massa": null,"temps_per_kg": "60 minuts",            "persones_necessaries": 1, "perfils_de_persona": "Cocinero",                "es_pot_parar": "Sí", "prerequisits": "Afegir Ricotta",            "comentaris": "18 minuts per container" },
+    { "producte": "########", "pas": 13, "dia": 2, "accio": "Fabricat producte",     "codi_intervinent": null,     "linia": "Túnel",                               "massa": null,"temps_per_kg": "1400 unidades / hora",  "persones_necessaries": 3, "perfils_de_persona": "Encarregat / Indirecte / Directa", "es_pot_parar": "No", "prerequisits": null,                       "comentaris": null }
   ]
 }
 
@@ -673,14 +721,14 @@ QUÈ ÉS UN RECURS (regles estrictes):
   · "Espera", "Magatzem", "Emmagatzematge", "Control" — només estats.
   · Tasques administratives, preparacions sense màquina concreta (ex: "Preparació de carros", "Preparació etiquetes") → 'linia' del pas serà null.
   · Tasques de NETEJA d'un recurs ja registrat (ex: "Limpieza Olla mediana") → NO és un recurs nou; la neteja es modela amb 'temps_neteja' del recurs original.
-- IMPORTANT: si una 'linia' del flux és una neteja (comença per "Limpieza", "Neteja"), NO la registris com a recurs separat. Suma els seus minuts al 'temps_neteja' del recurs original (ex: "Limpieza Olla mediana" → afegir 15 min a 'temps_neteja' del recurs "Olla mediana").
+- IMPORTANT: si el camp 'accio' d'un pas és una neteja, suma els seus minuts al 'temps_neteja' del recurs que es neteja (ex: 'accio' "Neteja Olla mediana", 15 min → afegir 15 min a 'temps_neteja' del recurs "Olla mediana"). Si una 'linia' antiga comença per "Limpieza" o "Neteja", NO la registris com a recurs separat.
 - Ignora completament totes les files del flux on 'linia' sigui null.
 - Si TOTS els recursos del flux amb 'linia' no null ja existeixen → retorna {"linies":[]}.
 
 ═══════════════════════════════════════════
 EXEMPLE:
 ═══════════════════════════════════════════
-Si al flux apareixen "Olla mediana" (45 min) i "Limpieza Olla mediana" (15 min), i no existeix encara:
+Si al flux hi ha un pas a "Olla mediana" (45 min) i un altre amb 'accio' "Neteja Olla mediana" (15 min), i el recurs no existeix encara:
 {
   "linies": [
     { "linia": "Olla mediana", "tipus": "olla", "quantitat": 1, "descripcio": "Olla de cocció mitjana", "temps_preparacio": null, "temps_neteja": 15, "temps_espera": null, "comentaris": null }
@@ -742,7 +790,7 @@ const Btn = ({ children, style, ...props }) => (
 );
 
 export default function App() {
-  const { data, loading, insertRows, mergeRow, updateCell, deleteRow: dbDelete, deleteWhere, reload } = useDatabase();
+  const { data, loading, insertRows, mergeRow, updateCell, deleteRow: dbDelete, deleteIds, reload } = useDatabase();
 
   const [act, setAct] = useState("productes");
   const [isRec, setIsRec] = useState(false);
@@ -767,6 +815,8 @@ export default function App() {
   const [redoSrc, setRedoSrc] = useState(null);
   const [redoText, setRedoText] = useState("");
   const [redoIsRec, setRedoIsRec] = useState(false);
+  // Codi del producte que la previsualització substituirà en confirmar (Refer)
+  const [pendRedo, setPendRedo] = useState(null);
   const rRef = useRef(null);
   const eRef = useRef(null);
   const isStoppingRef = useRef(false);
@@ -976,7 +1026,8 @@ export default function App() {
   /* ─── AI Parse — pipeline de 3 crides sequencials ─── */
   // textOverride i dataOverride els fa servir el reprocessament: just després d'esborrar el
   // producte, 'data' encara no s'ha re-renderitzat i cal treballar amb el snapshot ja filtrat.
-  const parseVoice = useCallback(async ({ textOverride, dataOverride } = {}) => {
+  // redoCode indica que el resultat ha de substituir aquest producte en confirmar.
+  const parseVoice = useCallback(async ({ textOverride, dataOverride, redoCode } = {}) => {
     const text = (textOverride ?? txt).trim();
     if (!text) { setStat("No hi ha text."); return; }
     const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
@@ -998,7 +1049,13 @@ export default function App() {
         { model: MODEL_REASONING }
       );
 
-      const proposedProducte = res1.productes?.[0]?.producte || "";
+      const proposedProducte = redoCode || res1.productes?.[0]?.producte || res1.productes?.[0]?.producto || "";
+      const existingSteps = JSON.stringify(
+        src.flux.filter(f => exactMatch(f.producte, proposedProducte))
+          .map(({ pas, dia, accio, codi_intervinent, linia }) => ({ pas, dia, accio, codi_intervinent, linia }))
+      );
+      // En refer, el codi és el del producte que se substitueix encara que la IA en digui un altre
+      const own = rows => normalizeAIFields(rows).map(r => redoCode ? { ...r, producte: redoCode } : r);
 
       // Crida 2: Flux
       setStat("🤖 (2/3) Processant flux de producció...");
@@ -1006,6 +1063,7 @@ export default function App() {
       const res2 = await callAI(
         PROMPT_FLUX
           .replace("{{EXISTING_RESOURCES}}", existingResources)
+          .replace("{{EXISTING_STEPS}}", existingSteps)
           .replace("{{PROPOSED_PRODUCTE}}", proposedProducte),
         text,
         { maxTokens: 32000 }
@@ -1021,11 +1079,11 @@ export default function App() {
       );
 
       const parsed = {
-        productes: normalizeAIFields((res1.productes || []).map(p => ({ ...p, transcripcio: text }))),
-        recepta:   normalizeAIFields(res1.recepta   || []),
+        productes: own((res1.productes || []).map(p => ({ ...p, transcripcio: text }))),
+        recepta:   own(res1.recepta   || []),
         farcit:    res1.farcit    || [],
         masses:    res1.masses    || [],
-        flux:      normalizeAIFields(res2.flux      || []),
+        flux:      own(res2.flux      || []),
         linies:    res3.linies    || [],
       };
 
@@ -1037,6 +1095,7 @@ export default function App() {
         setStat("No s'han pogut extreure dades. Prova amb més detall.");
       } else {
         setPend(resolved);
+        setPendRedo(redoCode || null);
         setChangeLog(changes);
         setPvt(CASCADE.find(t => resolved[t]?.length > 0) || "productes");
         const summary = CASCADE.filter(t => resolved[t]?.length > 0)
@@ -1053,46 +1112,100 @@ export default function App() {
 
   /* ─── Confirm pending (save to DB) ─── */
   const confirmAll = useCallback(async () => {
+    // Abans d'escriure res: si alguna fila no és vàlida, no es desa cap taula
+    const problems = [];
+    const prepared = Object.fromEntries(CASCADE.map(t => [t, (pend[t] || []).map(r => prepareRow(t, r, problems))]));
+    for (const t of PER_PRODUCT_TABLES)
+      if (prepared[t].some(r => !String(r.producte ?? "").trim()))
+        problems.push(`${SCHEMAS[t].label}: falta el codi de producte`);
+    if (problems.length) {
+      setStat(`❌ No s'ha desat res — ${[...new Set(problems)].join("  ·  ")}`);
+      return;
+    }
+
     setStat("💾 Guardant a la base de dades...");
+
+    // La descripció es desa la primera: si no es pot guardar, no es toca res més
+    const recordings = recordingsToAdd(prepared.productes, data.gravacions);
+    if (recordings.length) {
+      const { error } = await insertRows("gravacions", recordings);
+      if (error) { setStat(`❌ No s'ha desat res: no s'ha pogut guardar la descripció — ${error}`); return; }
+    }
+
     let nInserted = 0, nUpdated = 0, nErrors = 0;
     const errMsgs = [];
+    const remaining = {}; // files que no s'han pogut desar, per no perdre-les
+    const newIds = {};    // files noves per taula, per poder desfer un Refer fallit
+
+    // En un Refer les files antigues es guarden fins que les noves són a la BD
+    const oldIds = pendRedo
+      ? Object.fromEntries(PER_PRODUCT_TABLES.map(t => [t, data[t].filter(r => r.producte === pendRedo).map(r => r.id)]))
+      : null;
 
     for (const t of CASCADE) {
-      const rows = pend[t] || [];
+      const rows = prepared[t];
       if (!rows.length) continue;
 
       const toInsert = rows.filter(r => r._action !== 'update');
       const toUpdate = rows.filter(r => r._action === 'update' && r._existingId);
+      const failed = [];
 
       if (toInsert.length) {
         const { inserted, error } = await insertRows(t, toInsert);
         nInserted += inserted.length;
-        if (inserted.length < toInsert.length) nErrors += toInsert.length - inserted.length;
-        if (error) errMsgs.push(`${SCHEMAS[t].label}: ${error}`);
+        newIds[t] = inserted.map(r => r.id);
+        if (error) { errMsgs.push(`${SCHEMAS[t].label}: ${error}`); failed.push(...toInsert); nErrors += toInsert.length; }
       }
 
       for (const row of toUpdate) {
         const merged = await mergeRow(t, row._existingId, row);
         if (merged !== null) nUpdated++;
-        else nErrors++;
-        // Sempre sobreescriure la transcripcio amb la darrera gravació
-        if (t === 'productes' && row.transcripcio) {
-          await updateCell('productes', row._existingId, 'transcripcio', row.transcripcio);
+        else { nErrors++; failed.push(row); }
+        // Una gravació nova s'afegeix a les anteriors: mai les substitueix
+        if (t === 'productes' && row.transcripcio && merged && !merged.transcripcio?.includes(row.transcripcio)) {
+          const joined = [merged.transcripcio, row.transcripcio].filter(Boolean).join(RECORDING_SEP);
+          const { error } = await updateCell('productes', row._existingId, 'transcripcio', joined);
+          if (error) errMsgs.push(`Transcripció: ${error}`);
+        }
+      }
+      if (failed.length) remaining[t] = failed;
+    }
+
+    if (pendRedo) {
+      if (PER_PRODUCT_TABLES.some(t => remaining[t])) {
+        // Desfà les files noves: el producte anterior es queda intacte i es pot tornar a confirmar
+        for (const t of PER_PRODUCT_TABLES) {
+          await deleteIds(t, newIds[t] || []);
+          if (prepared[t].length) remaining[t] = prepared[t];
+        }
+      } else {
+        for (const t of PER_PRODUCT_TABLES) {
+          const { error } = await deleteIds(t, oldIds[t]);
+          if (error) errMsgs.push(`No s'han pogut treure les files antigues de ${SCHEMAS[t].label}: ${error}`);
         }
       }
     }
 
-    setPend(null); setTxt(""); setChangeLog([]);
     const parts = [];
     if (nInserted) parts.push(`${nInserted} nous`);
     if (nUpdated) parts.push(`${nUpdated} actualitzats`);
-    if (errMsgs.length) {
-      setStat(`❌ ${parts.join(' · ') || 'Res desat'} — ${errMsgs.join('  ·  ')}`);
+
+    const pendingTables = Object.keys(remaining);
+    if (pendingTables.length) {
+      setPend(remaining);
+      setPvt(pendingTables[0]);
+      setStat(`❌ ${parts.join(' · ') || 'Res desat'} — les files no desades continuen a la previsualització. ${errMsgs.join('  ·  ')}`);
       return;
     }
-    const errTxt = nErrors ? `  ⚠️ ${nErrors} errors (consola)` : '';
-    setStat(`✅ ${parts.join(' · ') || 'Sense canvis nous'}${errTxt}`);
-  }, [pend, insertRows, mergeRow, updateCell]);
+
+    setPend(null); setPendRedo(null); setTxt(""); txtRef.current = ""; setChangeLog([]);
+    if (errMsgs.length) {
+      setStat(`❌ ${parts.join(' · ') || 'Res desat'} — ${errMsgs.join('  ·  ')}`);
+      await reload();
+      return;
+    }
+    setStat(`✅ ${parts.join(' · ') || 'Sense canvis nous'}`);
+  }, [pend, pendRedo, data, insertRows, mergeRow, updateCell, deleteIds, reload]);
 
   const editPendCell = (table, ri, key) => {
     const val = prompt(`Editar "${key}":`, pend[table][ri][key] ?? "");
@@ -1124,13 +1237,70 @@ export default function App() {
   const commitEdit = async () => {
     if (!ec) return;
     const row = data[act][ec.ri];
-    await updateCell(act, row.id, ec.key, ev);
+    if (String(row[ec.key] ?? "") === String(ev)) { setEc(null); return; }
+    const { error } = await updateCell(act, row.id, ec.key, ev);
     setEc(null);
+    if (error) {
+      // L'estat local ja mostra el valor nou: cal rellegir perquè es vegi el que hi ha a la BD
+      await reload();
+      setStat(`❌ No s'ha pogut desar «${ec.key}»: ${error}`);
+    }
   };
   const handleDelete = async (idx) => {
     const row = data[act][idx];
     await dbDelete(act, row.id);
   };
+
+  // Genera un producte complet (files pròpies) a partir del seu base i les diferències.
+  // src són les dades contra les quals es resol; redoCode, el producte que substituirà en confirmar.
+  const generateVariant = useCallback(async ({ base, newCode, modText, src, transcripcio, redoCode }) => {
+    // Recopilar tot el producte base sense metadades
+    const stripMeta = r => { const c = { ...r }; delete c.id; delete c.created_at; return c; };
+    // Els codis poden venir de recepta o de productes, i aquest darrer pot portar-ne diversos
+    const codisDe = field => [...new Set([
+      ...src.recepta.filter(r => r.producte === base).flatMap(r => splitCodes(r[field])),
+      ...src.productes.filter(r => r.producte === base).flatMap(r => splitCodes(r[field])),
+    ])];
+    const codisFarcit = codisDe('codi_farcit');
+    const codisMassa = codisDe('codi_massa');
+    const baseJSON = {
+      productes: src.productes.filter(r => r.producte === base)
+        .map(r => { const c = stripMeta(r); delete c.transcripcio; return c; }),
+      recepta: src.recepta.filter(r => r.producte === base).map(stripMeta),
+      flux:    src.flux.filter(r => r.producte === base).map(stripMeta),
+      farcit:  src.farcit.filter(r => codisFarcit.includes(r.codi_farcit)).map(stripMeta),
+      masses:  src.masses.filter(r => codisMassa.includes(r.codi_massa)).map(stripMeta),
+    };
+
+    const prompt = PROMPT_DUPLICATE
+      .replace("{{BASE_JSON}}", JSON.stringify(baseJSON, null, 2))
+      .replaceAll("{{NEW_CODE}}", newCode)
+      .replace("{{USER_MODIFICATIONS}}", modText || "(sense modificacions — copia idèntic amb el nou codi)");
+
+    // Duplicar també és raonament estructural (quins codis es reutilitzen i quins canvien).
+    // La sortida inclou tot el flux del base: mateix marge que la crida de flux per no truncar-la.
+    const res = await callAI(prompt, "Aplica les modificacions i retorna el JSON del nou producte.", { model: MODEL_REASONING, maxTokens: 32000 });
+
+    const parsed = {
+      productes: normalizeAIFields((res.productes || []).map(p => ({
+        ...p, producte: newCode, basat_en: base,
+        transcripcio: transcripcio ?? `[Duplicat de ${base}]${modText ? ` ${modText}` : ""}`,
+      }))),
+      recepta: normalizeAIFields((res.recepta || []).map(r => ({ ...r, producte: newCode }))),
+      farcit:  res.farcit || [],
+      masses:  res.masses || [],
+      flux:    normalizeAIFields((res.flux || []).map(f => ({ ...f, producte: newCode }))),
+      linies:  [],
+    };
+
+    const { resolved: named, changeLog: changes } = resolveCanonicalNames(parsed, src);
+    const { resolved, added } = ensureCompositionStubs(named, src);
+    setPend(resolved);
+    setPendRedo(redoCode || null);
+    setChangeLog(changes);
+    setPvt(CASCADE.find(t => resolved[t]?.length > 0) || "productes");
+    return added;
+  }, [callAI]);
 
   const processDuplicateWithVoice = useCallback(async () => {
     const newCode = dupNewCode.trim();
@@ -1140,50 +1310,8 @@ export default function App() {
     setDupProcessing(true);
     setStat("🤖 Aplicant modificacions al producte base...");
 
-    // Recopilar tot el producte base sense metadades
-    const stripMeta = r => { const c = { ...r }; delete c.id; delete c.created_at; return c; };
-    // Els codis poden venir de recepta o de productes, i aquest darrer pot portar-ne diversos
-    const codisDe = field => [...new Set([
-      ...data.recepta.filter(r => r.producte === dupSrc).flatMap(r => splitCodes(r[field])),
-      ...data.productes.filter(r => r.producte === dupSrc).flatMap(r => splitCodes(r[field])),
-    ])];
-    const codisFarcit = codisDe('codi_farcit');
-    const codisMassa = codisDe('codi_massa');
-    const baseJSON = {
-      productes: data.productes.filter(r => r.producte === dupSrc)
-        .map(r => { const c = stripMeta(r); delete c.transcripcio; return c; }),
-      recepta: data.recepta.filter(r => r.producte === dupSrc).map(stripMeta),
-      flux:    data.flux.filter(r => r.producte === dupSrc).map(stripMeta),
-      farcit:  data.farcit.filter(r => codisFarcit.includes(r.codi_farcit)).map(stripMeta),
-      masses:  data.masses.filter(r => codisMassa.includes(r.codi_massa)).map(stripMeta),
-    };
-
     try {
-      const prompt = PROMPT_DUPLICATE
-        .replace("{{BASE_JSON}}", JSON.stringify(baseJSON, null, 2))
-        .replaceAll("{{NEW_CODE}}", newCode)
-        .replace("{{USER_MODIFICATIONS}}", modText || "(sense modificacions — copia idèntic amb el nou codi)");
-
-      // Duplicar també és raonament estructural (quins codis es reutilitzen i quins canvien)
-      const res = await callAI(prompt, "Aplica les modificacions i retorna el JSON del nou producte.", { model: MODEL_REASONING });
-
-      const parsed = {
-        productes: normalizeAIFields((res.productes || []).map(p => ({
-          ...p, producte: newCode,
-          transcripcio: `[Duplicat de ${dupSrc}]${modText ? ` ${modText}` : ""}`,
-        }))),
-        recepta: normalizeAIFields((res.recepta || []).map(r => ({ ...r, producte: newCode }))),
-        farcit:  res.farcit || [],
-        masses:  res.masses || [],
-        flux:    normalizeAIFields((res.flux || []).map(f => ({ ...f, producte: newCode }))),
-        linies:  [],
-      };
-
-      const { resolved: named, changeLog: changes } = resolveCanonicalNames(parsed, data);
-      const { resolved, added } = ensureCompositionStubs(named, data);
-      setPend(resolved);
-      setChangeLog(changes);
-      setPvt(CASCADE.find(t => resolved[t]?.length > 0) || "productes");
+      const added = await generateVariant({ base: dupSrc, newCode, modText, src: data });
       const stubTxt = added ? `  ·  ⚠️ ${added} codis pendents de composició` : "";
       setStat(`✅ Variant "${newCode}" preparada${stubTxt} — Revisa i confirma.`);
       setDupSrc(null); setDupNewCode(""); setDupText("");
@@ -1193,7 +1321,7 @@ export default function App() {
     } finally {
       setDupProcessing(false);
     }
-  }, [dupSrc, dupNewCode, dupText, data, callAI]);
+  }, [dupSrc, dupNewCode, dupText, data, generateVariant]);
 
   /* ─── Crear les files de composició que falten per a les dades ja registrades ─── */
   const backfillCompositions = useCallback(async () => {
@@ -1232,35 +1360,48 @@ export default function App() {
     setStat(n ? `✅ ${n} ${n === 1 ? "codi orfe esborrat" : "codis orfes esborrats"}.` : "✅ No hi ha codis orfes.");
   }, [orphanRows, dbDelete]);
 
-  /* ─── Refer un producte: esborrar-lo i tornar a processar la transcripció ─── */
+  /* ─── Refer un producte: tornar a processar la transcripció sense tocar res fins a confirmar ─── */
   const reprocessProduct = useCallback(async () => {
     const code = redoSrc;
     const text = redoText.trim();
     if (!code || !text) return;
 
     stopRedoRec();
-    setStat(`⏳ Esborrant ${code}...`);
 
     // Snapshot sense el producte. parseVoice l'ha de veure com a NOU: si encara hi constés,
     // el prompt diria "no duplicar" i les files es marcarien com a update (que no sobreescriu).
     const src = { ...data };
     for (const t of PER_PRODUCT_TABLES) src[t] = (data[t] || []).filter(r => r.producte !== code);
 
-    for (const t of PER_PRODUCT_TABLES) {
-      const { error } = await deleteWhere(t, 'producte', code);
-      if (error) {
-        // deleteWhere ja ha filtrat l'estat local: cal rellegir per no quedar desincronitzat
-        setStat(`❌ No s'ha pogut esborrar ${SCHEMAS[t].label}: ${error}`);
-        await reload();
+    // Una variant només descriu les diferències: s'ha de regenerar a partir del seu base
+    const variant = parseVariantMarker(text);
+    if (variant) {
+      if (variant.base === code || !src.productes.some(p => p.producte === variant.base)) {
+        setStat(`❌ No es troba el producte base ${variant.base}. No s'ha tocat res.`);
+        setRedoSrc(null);
         return;
       }
+      setRedoSrc(null);
+      setParsing(true);
+      setStat(`🤖 Regenerant ${code} a partir de ${variant.base}...`);
+      try {
+        const added = await generateVariant({ base: variant.base, newCode: code, modText: variant.diff, src, transcripcio: text, redoCode: code });
+        const stubTxt = added ? `  ·  ⚠️ ${added} codis pendents de composició` : "";
+        setStat(`✅ Variant ${code} regenerada${stubTxt} — Revisa i confirma.`);
+      } catch (err) {
+        console.error(err);
+        setStat(`❌ Error: ${err.message}. No s'ha tocat res.`);
+      } finally {
+        setParsing(false);
+      }
+      return;
     }
 
     setRedoSrc(null);
     // Deixa el text a la caixa principal: si la IA falla, la transcripció no es perd
     setTxt(text); txtRef.current = text;
-    await parseVoice({ textOverride: text, dataOverride: src });
-  }, [redoSrc, redoText, data, deleteWhere, parseVoice, stopRedoRec, reload]);
+    await parseVoice({ textOverride: text, dataOverride: src, redoCode: code });
+  }, [redoSrc, redoText, data, parseVoice, generateVariant, stopRedoRec]);
 
   /* ─── Export ─── */
   const exportJSON = () => {
@@ -1361,11 +1502,16 @@ export default function App() {
             {act === "productes" && (
               <p style={{ margin: "4px 0 0", fontSize: 10, color: C.t3 }}>
                 💡 <strong style={{ color: C.o }}>Copiar</strong> crea una variant del producte: dicta només les diferències i la IA aplica els canvis.
-                {" "}<strong style={{ color: C.ac }}>Refer</strong> esborra el producte, la seva recepta i el seu flux, i els torna a extreure de la transcripció (que pots corregir abans).
+                {" "}<strong style={{ color: C.ac }}>Refer</strong> torna a extreure el producte, la seva recepta i el seu flux de la transcripció (que pots corregir abans), i només els substitueix quan confirmes.
               </p>
             )}
           </div>
         </header>
+
+        {/* Missatges d'estat a les pestanyes sense panell de veu */}
+        {stat && act !== "productes" && (
+          <div style={{ padding: "8px 24px", borderBottom: `1px solid ${C.b1}`, fontSize: 11, lineHeight: 1.5, color: stat.includes("❌") ? C.r : stat.includes("✅") ? C.g : C.o }}>{stat}</div>
+        )}
 
         {/* ═══ VOICE PANEL ═══ */}
         {act === "productes" && (
@@ -1482,7 +1628,7 @@ export default function App() {
         {pend && pTabs.length > 0 && (
           <div style={{ borderBottom: `2px solid ${C.o}`, background: C.s1, flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "center", padding: "8px 24px", gap: 6, borderBottom: `1px solid ${C.b1}`, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 11, color: C.o, fontWeight: 700, marginRight: 6 }}>⚡ PREVISUALITZACIÓ</span>
+              <span style={{ fontSize: 11, color: C.o, fontWeight: 700, marginRight: 6 }}>⚡ PREVISUALITZACIÓ{pendRedo ? ` · ♻️ substitueix ${pendRedo} en confirmar` : ""}</span>
               {pTabs.map(t => (
                 <Btn key={t} onClick={() => setPvt(t)} style={{
                   padding: "4px 12px", fontSize: 11,
@@ -1493,7 +1639,7 @@ export default function App() {
               ))}
               <div style={{ flex: 1 }} />
               <Btn onClick={confirmAll} style={{ padding: "5px 16px", background: C.gD, border: `1px solid ${C.g}`, color: C.g, fontSize: 11 }}>✓ Confirmar tot</Btn>
-              <Btn onClick={() => { setPend(null); setChangeLog([]); setStat("Descartat."); }} style={{ padding: "5px 16px", background: C.rD, border: `1px solid ${C.r}`, color: C.r, fontSize: 11 }}>✗ Descartar</Btn>
+              <Btn onClick={() => { setPend(null); setPendRedo(null); setChangeLog([]); setStat("Descartat."); }} style={{ padding: "5px 16px", background: C.rD, border: `1px solid ${C.r}`, color: C.r, fontSize: 11 }}>✗ Descartar</Btn>
             </div>
             {changeLog.length > 0 && (
               <div style={{ padding: "7px 24px", background: "#1E1A06", borderBottom: `1px solid ${C.o}`, fontSize: 10, color: C.o, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
@@ -1691,7 +1837,7 @@ export default function App() {
                                 {row.transcripcio && (
                                   <Btn
                                     onClick={() => { setRedoSrc(row.producte); setRedoText(row.transcripcio); }}
-                                    title="Esborrar aquest producte, la seva recepta i el seu flux, i tornar-ho a processar"
+                                    title="Tornar a processar aquest producte. Res no es substitueix fins que confirmes"
                                     style={{
                                       padding: "3px 9px", fontSize: 10,
                                       background: C.acD, border: `1px solid ${C.ac}`,
@@ -1898,7 +2044,7 @@ export default function App() {
               background: C.rD, border: `1px solid ${C.r}`,
             }}>
               <div style={{ fontSize: 11, color: C.r, fontWeight: 600, marginBottom: 4 }}>
-                S'esborraran aquestes files i es tornaran a crear des de zero:
+                En confirmar el resultat, aquestes files se substituiran (fins llavors no es toca res):
               </div>
               <div style={{ fontSize: 11, color: C.t2, lineHeight: 1.7 }}>
                 {PER_PRODUCT_TABLES.map(t =>
@@ -1951,7 +2097,7 @@ export default function App() {
                   color: redoText.trim() && !parsing ? "#fff" : C.t3,
                   opacity: redoText.trim() && !parsing ? 1 : 0.5,
                 }}>
-                {parsing ? "🤖 Processant..." : "♻️ Esborrar i refer"}
+                {parsing ? "🤖 Processant..." : "♻️ Refer"}
               </Btn>
             </div>
           </div>
