@@ -45,6 +45,27 @@ const cleanRow = r => {
   return o
 }
 
+// Supabase retorna com a molt 1000 files per petició. Sense paginar, les files que
+// passen d'aquest límit no arriben a l'app i Refer o la fusió no les veuen.
+const PAGE_SIZE = 1000
+
+const fetchAllRows = async table => {
+  const rows = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    // L'id desempata les files inserides alhora, perquè cap fila salti de pàgina
+    const { data: page, error } = await supabase
+      .from(table)
+      .select('*')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1)
+
+    if (error) return { rows: [], error }
+    rows.push(...page)
+    if (page.length < PAGE_SIZE) return { rows, error: null }
+  }
+}
+
 export function useDatabase() {
   const [data, setData] = useState(() => {
     const init = {}
@@ -71,10 +92,7 @@ export function useDatabase() {
 
     const newData = {}
     for (const [key, table] of Object.entries(TABLE_MAP)) {
-      const { data: rows, error } = await supabase
-        .from(table)
-        .select('*')
-        .order('created_at', { ascending: true })
+      const { rows, error } = await fetchAllRows(table)
 
       if (error) {
         console.error(`Error loading ${table}:`, error)
