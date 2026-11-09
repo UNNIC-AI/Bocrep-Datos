@@ -203,10 +203,10 @@ Aquesta guia és per a la persona que **registra la informació amb la veu**. Se
    - 3ª → Recursos nous (línies)
 2. Es mostren totes les files **proposades** abans de desar-les.
 3. Pots **editar qualsevol cel·la** abans de confirmar.
-4. En confirmar, les files es desen a la BBDD. **Si tornes a gravar més info del mateix producte, només s'omplen els camps que estaven buits — no s'esborra res del que ja hi ha.**
+4. En confirmar, les files es desen a la BBDD. **Si tornes a gravar més info del mateix producte, només s'omplen els camps que estaven buits i s'afegeixen els passos i files nous — no s'esborra res del que ja hi ha.** Cada descripció queda guardada per sempre.
 5. Tot codi de farcit o massa que esmentis tindrà **sempre una fila** a la seva taula, encara que no n'hagis descrit la composició. Aquests codis pendents apareixen marcats amb ⚠️ a les pestanyes **Farcit**, **Masses** i **Recepta**, perquè sàpigues què queda per completar.
 6. Igualment, tot recurs que aparegui al flux tindrà **sempre una fila** a la pestanya **Recursos**, amb quantitat 1 per defecte. Si en falta cap (per exemple de gravacions antigues), la pestanya mostra un avís amb un botó per crear-los de cop.
-7. La **transcripció es guarda** amb el producte. Si l'extracció no ha sortit bé, prem **Refer** a la pestanya Productes: podràs corregir el text (o afegir-hi coses dictant) i es tornarà a extreure tot des de zero. Això sí que **esborra i reescriu** el producte, la seva recepta i el seu flux, al contrari que tornar a gravar, que només omple buits.
+7. Totes les **gravacions es guarden** amb el producte. Si l'extracció no ha sortit bé, prem **Refer** a la pestanya Productes: podràs corregir el text (o afegir-hi coses dictant) i es tornarà a extreure tot. Si el producte és una variant, es regenera a partir del seu producte base i les diferències. En **confirmar** se substitueixen el producte, la seva recepta i el seu flux, al contrari que tornar a gravar, que només omple buits. Si descartes o falla, no canvia res.
 
 > ⚠️ **Refer** no toca Farcit, Masses ni Recursos, que són catàlegs compartits amb altres productes. Si hi queda algun codi buit que ja no fa servir ningú, les pestanyes Farcit i Masses mostren un avís per esborrar-lo.
 

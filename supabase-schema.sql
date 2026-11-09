@@ -19,7 +19,8 @@ create table if not exists productes (
   dies_permesos       text,
   incompatible_amb    text,
   comentaris          text,
-  transcripcio        text
+  transcripcio        text,
+  basat_en            text
 );
 
 -- 2. RECEPTA
@@ -33,6 +34,8 @@ create table if not exists recepta (
   codi_massa            text,
   grams_per_unit_massa  numeric,
   merma_massa           numeric,
+  kg_farcit_palet       numeric,
+  kg_massa_palet        numeric,
   comentaris            text
 );
 
@@ -77,6 +80,7 @@ create table if not exists flux (
   producte              text,
   pas                   integer,
   dia                   numeric,
+  accio                 text,
   codi_intervinent      text,
   linia                 text,
   massa                 numeric,
@@ -107,10 +111,19 @@ create table if not exists torns (
   comentaris        text
 );
 
+-- 8. GRAVACIONS (1 fila per descripció desada; només s'hi afegeix, mai es modifica ni s'esborra)
+create table if not exists gravacions (
+  id            uuid primary key default gen_random_uuid(),
+  created_at    timestamptz default now(),
+  producte      text,
+  text          text not null
+);
+
 -- ══════════════════════════════════════════════════════════
 -- MIGRACIONS (executa si les taules ja existien al teu projecte)
 -- ══════════════════════════════════════════════════════════
 -- FLUX
+ALTER TABLE flux ADD COLUMN IF NOT EXISTS accio text;
 ALTER TABLE flux ADD COLUMN IF NOT EXISTS pas integer;
 ALTER TABLE flux ADD COLUMN IF NOT EXISTS massa numeric;
 ALTER TABLE flux ADD COLUMN IF NOT EXISTS codi_intervinent text;
@@ -119,6 +132,25 @@ ALTER TABLE flux ALTER COLUMN temps_per_kg TYPE text USING temps_per_kg::text;
 
 -- PRODUCTES
 ALTER TABLE productes ADD COLUMN IF NOT EXISTS transcripcio text;
+ALTER TABLE productes ADD COLUMN IF NOT EXISTS basat_en text;
+-- Els productes creats amb "Copiar" porten el producte base a la transcripció
+UPDATE productes
+   SET basat_en = substring(transcripcio from '^\[Duplicat de ([^\]]+)\]')
+ WHERE basat_en IS NULL AND transcripcio LIKE '[Duplicat de %';
+
+-- RECEPTA
+ALTER TABLE recepta ADD COLUMN IF NOT EXISTS kg_farcit_palet numeric;
+ALTER TABLE recepta ADD COLUMN IF NOT EXISTS kg_massa_palet numeric;
+
+-- GRAVACIONS: copia les descripcions existents, una sola vegada i sense alterar-les
+INSERT INTO gravacions (created_at, producte, text)
+SELECT p.created_at, p.producte, p.transcripcio
+  FROM productes p
+ WHERE coalesce(p.transcripcio, '') <> ''
+   AND NOT EXISTS (
+     SELECT 1 FROM gravacions g
+      WHERE g.producte IS NOT DISTINCT FROM p.producte AND g.text = p.transcripcio
+   );
 
 -- FARCIT
 ALTER TABLE farcit ADD COLUMN IF NOT EXISTS codi_farcit text;
@@ -148,8 +180,17 @@ alter table masses    enable row level security;
 alter table linies    enable row level security;
 alter table flux      enable row level security;
 alter table torns     enable row level security;
+alter table gravacions enable row level security;
 
 -- Política oberta (qualsevol pot llegir/escriure amb la anon key)
+-- Els "drop" permeten tornar a executar aquest fitxer sencer
+drop policy if exists "Allow all" on productes;
+drop policy if exists "Allow all" on recepta;
+drop policy if exists "Allow all" on farcit;
+drop policy if exists "Allow all" on masses;
+drop policy if exists "Allow all" on linies;
+drop policy if exists "Allow all" on flux;
+drop policy if exists "Allow all" on torns;
 create policy "Allow all" on productes for all using (true) with check (true);
 create policy "Allow all" on recepta   for all using (true) with check (true);
 create policy "Allow all" on farcit    for all using (true) with check (true);
@@ -157,3 +198,9 @@ create policy "Allow all" on masses    for all using (true) with check (true);
 create policy "Allow all" on linies    for all using (true) with check (true);
 create policy "Allow all" on flux      for all using (true) with check (true);
 create policy "Allow all" on torns     for all using (true) with check (true);
+
+-- Gravacions: sense política d'update ni delete, la BD rebutja qualsevol canvi o esborrat
+drop policy if exists "Read" on gravacions;
+drop policy if exists "Insert" on gravacions;
+create policy "Read"   on gravacions for select using (true);
+create policy "Insert" on gravacions for insert with check (true);
