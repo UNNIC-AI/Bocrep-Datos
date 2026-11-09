@@ -1,6 +1,6 @@
 # Informe de productes abans de reprocessar
 
-Generat el 2026-11-09 a partir de l'exportació JSON (67 productes). Només descriu l'estat de les dades: no s'ha canviat cap fila.
+Generat el 2026-11-09 a partir de l'exportació JSON completa (67 productes, 1792 passos, 66 descripcions). Només descriu l'estat de les dades: no s'ha canviat cap fila.
 
 ## Resum
 
@@ -15,8 +15,8 @@ Productes amb avís de possible gravació perduda o correcció manual: 12 (62652
 
 ## Limitacions
 
-- L'exportació només conté les primeres 1000 files de `flux`, pel límit de lectura de Supabase. Els passos a partir del producte 6210820 no s'han pogut revisar.
-- Hi ha 57 passos i 8 línies de recepta sense producte. Pels codis de les receptes, les línies semblen de 246122 (R2061), 6211124 (R6111), 24157536 (R4074) i dels productes amb R1010 (24621024, 24101032).
+- Les 66 descripcions de la taula productes coincideixen exactament amb les de la taula gravacions.
+- Hi ha 239 passos i 8 línies de recepta sense producte. Pels codis de les receptes, les línies semblen de 246122 (R2061), 6211124 (R6111), 24157536 (R4074) i dels productes amb R1010 (24621024, 24101032 i el de codi buit). Són els productes sense passos ni recepta, i el reprocessament els refarà des de la descripció.
 
 ## Codis sense producte i proposta
 
@@ -67,35 +67,35 @@ Productes amb avís de possible gravació perduda o correcció manual: 12 (62652
 | 242410522 | Mini Quesadilla de Cheddar y Bacon 40g | Completa |  | 5001 | 32 | 1 | Molt semblant a 2410522 |
 | 626224 | Roll Cheddar y Jalapeño 50gr | Completa |  | 6386 | 24 | 1 |  |
 | 140730 | Crepe Nutella Medialuna 80gr | Completa |  | 3441 | 19 | 1 |  |
-| 246122 | Mini Quesadilla Cheddar y Jalapeño 40gr | Completa |  | 4467 | 0 | 0 | Molt semblant a 24246122 |
+| 246122 | Mini Quesadilla Cheddar y Jalapeño 40gr | Completa |  | 4467 | 0 | 0 | Molt semblant a 24246122<br>⚠ Cap pas ni recepta amb aquest codi |
 | 2410522 | Mini quesadilla Cheddar y bacon 40gr | Completa |  | 5001 | 35 | 1 | Molt semblant a 242410522 |
 | 626220 | Roll de cheddar y jalapeño 30gr/u | Completa |  | 6382 | 30 | 1 |  |
 | 626520 | Rol de Chile y carne | Completa |  | 6548 | 24 | 1 |  |
 | 626620 | Rol de pollo y cilantro 30g/u | Completa |  | 6559 | 23 | 1 |  |
-| 6210820 | Rol de pollo y curry 30g/u | Completa |  | 6558 | 9 | 1 | Passos tallats a l'exportació |
-| 246210824 | Rolls Pollo y Curry 50gr | Completa |  | 6557 | 0 | 1 | Passos no visibles a l'exportació |
-| 24620124 | Roll de chocolate 50g/u | Completa |  | 6058 | 0 | 1 | Passos no visibles a l'exportació |
-| 620120 | Roll de chocolate 30gr | Completa |  | 6351 | 0 | 1 | Passos no visibles a l'exportació |
-| 6211724 | Roll de Choriqueso 50gr | Completa |  | 6457 | 0 | 1 | Passos no visibles a l'exportació |
-| 6211124 | Rolls Arroz con Chipirones 50gr | Completa |  | 6151 | 0 | 0 | Passos no visibles a l'exportació |
-| 267124 | Mini Piadina Jamón y Queso 50gr | Completa |  | 4672 | 0 | 1 | Passos no visibles a l'exportació |
-| 6210720 | Rol de cerdo agridulce 30g/u | Completa |  | 6741 | 0 | 1 | Passos no visibles a l'exportació |
-| 246210724 | Rol de cerdo agridulce 50g/u | Completa |  | 6740 | 0 | 0 | ⚠ **Pot faltar una gravació o hi ha correcció manual**: kg_massa_palet=501.38, kg_farcit_palet=310.21<br>Dades sota un altre codi: `2462107204 (1 línia de recepta)`<br>Passos no visibles a l'exportació |
-| 24620924 | Rol Toffe 50gr | Completa |  | 5763 | 0 | 1 | ⚠ **Pot faltar una gravació o hi ha correcció manual**: codis R1381<br>Passos no visibles a l'exportació |
-| 24621024 | Rol de manzana y pasas 50gr | Completa |  | 6269 | 0 | 0 | Passos no visibles a l'exportació |
+| 6210820 | Rol de pollo y curry 30g/u | Completa |  | 6558 | 22 | 1 |  |
+| 246210824 | Rolls Pollo y Curry 50gr | Completa |  | 6557 | 22 | 1 |  |
+| 24620124 | Roll de chocolate 50g/u | Completa |  | 6058 | 27 | 1 |  |
+| 620120 | Roll de chocolate 30gr | Completa |  | 6351 | 27 | 1 |  |
+| 6211724 | Roll de Choriqueso 50gr | Completa |  | 6457 | 23 | 1 |  |
+| 6211124 | Rolls Arroz con Chipirones 50gr | Completa |  | 6151 | 0 | 0 | ⚠ Cap pas ni recepta amb aquest codi |
+| 267124 | Mini Piadina Jamón y Queso 50gr | Completa |  | 4672 | 28 | 1 |  |
+| 6210720 | Rol de cerdo agridulce 30g/u | Completa |  | 6741 | 24 | 1 |  |
+| 246210724 | Rol de cerdo agridulce 50g/u | Completa |  | 6740 | 0 | 0 | ⚠ **Pot faltar una gravació o hi ha correcció manual**: kg_massa_palet=501.38, kg_farcit_palet=310.21<br>Dades sota un altre codi: `2462107204 (23 passos, 1 línia de recepta)` |
+| 24620924 | Rol Toffe 50gr | Completa |  | 5763 | 27 | 1 | ⚠ **Pot faltar una gravació o hi ha correcció manual**: codis R1381 |
+| 24621024 | Rol de manzana y pasas 50gr | Completa |  | 6269 | 0 | 0 | ⚠ Cap pas ni recepta amb aquest codi |
 | (buit) | Rol Manzana y Pasas 50gr | Sense codi |  | 6048 | 0 | 0 | ⚠ Codi buit; descripció gairebé igual a 24621024 |
-| 24100932 | Crêpe Dulce de Leche 90gr | Completa |  | 4668 | 0 | 0 | ⚠ **Pot faltar una gravació o hi ha correcció manual**: codis R1381<br>Dades sota un altre codi: `1400932 (1 línia de recepta)`<br>Passos no visibles a l'exportació |
-| 24101032 | Crêpe de manzana y pasas 90gr | Completa |  | 5186 | 0 | 0 | Passos no visibles a l'exportació |
-| 24157036 | Crêpe de jamón y queso emental 110G/Unidad | Completa |  | 4300 | 0 | 1 | Molt semblant a 2478<br>Passos no visibles a l'exportació |
-| 2478 | Crêpe de jamón y queso emmental 130gr | Completa |  | 4264 | 0 | 1 | Molt semblant a 24157036<br>Passos no visibles a l'exportació |
-| 24157536 | Crep de Boletus 110gr | Completa |  | 4613 | 0 | 0 | Passos no visibles a l'exportació |
-| 24155036 | Crêpe Champiñones, Bacon y Queso 110gr | Completa |  | 5022 | 0 | 1 | Molt semblant a 2502<br>Passos no visibles a l'exportació |
-| 2502 | Crêpe Champiñones, Bacon y Queso 130gr | Completa |  | 4998 | 0 | 1 | Molt semblant a 24155036<br>Passos no visibles a l'exportació |
-| 1511140 | Crêpe de arroz con chipirones 130gr | Completa |  | 4042 | 0 | 1 | Passos no visibles a l'exportació |
-| 98226724 | Mini Burrito Snack Chili Carne 25gr | Completa |  | 5820 | 0 | 1 | Passos no visibles a l'exportació |
-| 98246122 | Quesadilla Snack Cheddar y Jalapeño 20gr | Completa |  | 4864 | 0 | 1 | Passos no visibles a l'exportació |
-| 625324 | Roll de espinacas, queso 50gr/u | Completa |  | 7222 | 0 | 1 | Passos no visibles a l'exportació |
-| 2477 | Espinacas - Ricota - Bacon - Pasas y Piñon | Completa |  | 5726 | 0 | 1 | Molt semblant a 24155536<br>Passos no visibles a l'exportació |
-| 24155536 | Crêpe Espinacas Ricota Bacon Pasas y Piñon | Completa |  | 5756 | 0 | 1 | Molt semblant a 2477<br>Passos no visibles a l'exportació |
-| 2663 | Crêpe vieiras y gambas 130gr | Completa |  | 6203 | 0 | 1 | Molt semblant a 24158436<br>Passos no visibles a l'exportació |
-| 24158436 | Crêpe de vieiras y gambas 110gr | Completa |  | 6221 | 0 | 1 | Molt semblant a 2663<br>Passos no visibles a l'exportació |
+| 24100932 | Crêpe Dulce de Leche 90gr | Completa |  | 4668 | 0 | 0 | ⚠ **Pot faltar una gravació o hi ha correcció manual**: codis R1381<br>Dades sota un altre codi: `1400932 (31 passos, 1 línia de recepta)` |
+| 24101032 | Crêpe de manzana y pasas 90gr | Completa |  | 5186 | 0 | 0 | ⚠ Cap pas ni recepta amb aquest codi |
+| 24157036 | Crêpe de jamón y queso emental 110G/Unidad | Completa |  | 4300 | 26 | 1 | Molt semblant a 2478 |
+| 2478 | Crêpe de jamón y queso emmental 130gr | Completa |  | 4264 | 26 | 1 | Molt semblant a 24157036 |
+| 24157536 | Crep de Boletus 110gr | Completa |  | 4613 | 0 | 0 | ⚠ Cap pas ni recepta amb aquest codi |
+| 24155036 | Crêpe Champiñones, Bacon y Queso 110gr | Completa |  | 5022 | 29 | 1 | Molt semblant a 2502 |
+| 2502 | Crêpe Champiñones, Bacon y Queso 130gr | Completa |  | 4998 | 31 | 1 | Molt semblant a 24155036 |
+| 1511140 | Crêpe de arroz con chipirones 130gr | Completa |  | 4042 | 27 | 1 |  |
+| 98226724 | Mini Burrito Snack Chili Carne 25gr | Completa |  | 5820 | 25 | 1 |  |
+| 98246122 | Quesadilla Snack Cheddar y Jalapeño 20gr | Completa |  | 4864 | 30 | 1 |  |
+| 625324 | Roll de espinacas, queso 50gr/u | Completa |  | 7222 | 29 | 1 |  |
+| 2477 | Espinacas - Ricota - Bacon - Pasas y Piñon | Completa |  | 5726 | 35 | 1 | Molt semblant a 24155536 |
+| 24155536 | Crêpe Espinacas Ricota Bacon Pasas y Piñon | Completa |  | 5756 | 35 | 1 | Molt semblant a 2477 |
+| 2663 | Crêpe vieiras y gambas 130gr | Completa |  | 6203 | 36 | 1 | Molt semblant a 24158436 |
+| 24158436 | Crêpe de vieiras y gambas 110gr | Completa |  | 6221 | 36 | 1 | Molt semblant a 2663 |
