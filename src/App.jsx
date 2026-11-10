@@ -158,13 +158,13 @@ function recordingsToAdd(products, existing) {
   });
 }
 
-// Xifres d'un text, sense fraccions ni hores (la IA les converteix a minuts) ni números petits
-// (apareixen arreu i no diuen res)
-const significantNumbers = s => new Set(
+// Xifres d'un text, sense fraccions ni hores (la IA les converteix a minuts)
+const numbersIn = s =>
   (String(s || '').replace(/\d+\/\d+|\d+:\d+/g, ' ').match(/\d+(?:[.,]\d+)?/g) || [])
-    .map(n => Number(n.replace(',', '.')))
-    .filter(n => n >= 10)
-);
+    .map(n => Number(n.replace(',', '.')));
+
+// Els números petits apareixen arreu i no diuen res
+const significantNumbers = s => new Set(numbersIn(s).filter(n => n >= 10));
 
 // Frases de la gravació amb alguna xifra que no consta enlloc del que s'ha extret, perquè es
 // puguin revisar. Es fa per codi perquè el resultat no depengui de la IA que s'està comprovant.
@@ -205,7 +205,8 @@ const FLAGGED_PRODUCTS = new Set([
 
 const isBlank = v => v === null || v === undefined || v === "";
 
-const QUANTITY_FIELDS = ["kg_massa_palet", "kg_farcit_palet", "grams_per_unitat_farcit", "grams_per_unit_massa"];
+// Depenen del pes de la unitat: una variant no les pot heretar ni calcular a partir del base
+const QUANTITY_FIELDS = ["kg_massa_palet", "kg_farcit_palet", "grams_per_unitat_farcit", "grams_per_unit_massa", "unitats_per_carro"];
 
 const withoutProduct = (data, code) => {
   const src = { ...data };
@@ -238,12 +239,14 @@ function rerunOrder(productes) {
 // actual, perquè un buit de la IA no l'esborri. En una variant, un valor heretat del base tampoc
 // substitueix el propi: si la variant no l'ha dictat, la gravació no diu res d'aquell camp.
 function mergeWithCurrent(parsed, data, base) {
+  const isVariant = !isBlank(parsed.productes?.[0]?.basat_en);
+  const dictated = new Set(numbersIn(parsed.productes?.[0]?.transcripcio));
   const fill = (table, row, old, baseRow) => {
     const out = { ...row };
     for (const { key } of SCHEMAS[table].fields) {
       const inherited = baseRow && !isBlank(row[key]) && String(row[key]) === String(baseRow[key]);
-      // Els kg i grams del base no serveixen per a una variant d'un altre pes
-      if (inherited && QUANTITY_FIELDS.includes(key)) out[key] = old[key] ?? null;
+      // Una quantitat que la variant no ha dictat és del base o calculada a partir del base
+      if (isVariant && QUANTITY_FIELDS.includes(key) && !dictated.has(Number(row[key]))) out[key] = old[key] ?? null;
       else if (!isBlank(old[key]) && (isBlank(row[key]) || inherited)) out[key] = old[key];
     }
     return out;
@@ -257,10 +260,12 @@ function mergeWithCurrent(parsed, data, base) {
 
   const code = productes[0]?.producte;
   const oldRecepta = (data.recepta || []).filter(r => r.producte === code);
-  const newRecepta = (parsed.recepta || []).map(r => {
+  // Una fila sense codis ni quantitats no és una recepta, encara que porti un comentari
+  const hasRecipeData = r => SCHEMAS.recepta.fields.some(f => !["producte", "comentaris"].includes(f.key) && !isBlank(r[f.key]));
+  const newRecepta = (parsed.recepta || []).filter(hasRecipeData).map(r => {
     const old = oldRecepta.find(o => sameRecipe(r, o));
     const baseRow = (base?.recepta || []).find(b => sameRecipe(r, { ...b, producte: r.producte }));
-    return old ? fill("recepta", r, old, baseRow) : r;
+    return old || isVariant ? fill("recepta", r, old || {}, baseRow) : r;
   });
 
   // Una gravació que no descriu cap recepta no pot deixar el producte sense la que ja tenia
@@ -676,7 +681,7 @@ Camps i FORMATS exactes:
 - 'linies_permeses'    text   → línies on es pot fabricar el producte, NOMÉS si es dicta una restricció
                                  (ex: "Línia 2", "Línia 1, Línia 2"). null si no es diu.
 - 'unitats_per_carro'  number → unitats de producte que hi caben a cada carro. null si no es dicta.
-- 'comentaris'         text
+- 'comentaris'         text   → NOMÉS dades del producte que no tinguin cap altre camp. El procés (passos, temps, persones, neteges, velocitats, dosificadors, carros) el recull una altra extracció: no el resumeixis aquí. Si no queda res → null.
 
 ═══════════════════════════════════════════
 2. RECEPTA (1 fila per combinació de producte + farcit + massa):
@@ -691,7 +696,7 @@ Camps i FORMATS:
 - 'merma_massa'             number → DECIMAL entre 0 i 1 (ex: 0.248 = 24.8%)
 - 'kg_farcit_palet'         number → kg per palet d'AQUEST codi_farcit (ex: 328.01). null si no es dicta per separat.
 - 'kg_massa_palet'          number → kg per palet d'AQUESTA codi_massa (ex: 335.01). null si no es dicta per separat.
-- 'comentaris'              text
+- 'comentaris'              text   → NOMÉS notes d'aquesta combinació que no tinguin cap altre camp, mai una descripció del procés. Si no n'hi ha → null.
 
 Regles RECEPTA:
 - Una fila representa una combinació (producte + codi_farcit + codi_massa).
@@ -702,6 +707,8 @@ Regles RECEPTA:
 - Si dicta percentatges ("3 per cent", "24,8%"), DIVIDEIX per 100 i registra com a decimal.
 - Si l'usuari parla de "la massa" o "el farcit" però NO en dicta el codi → deixa el camp a null.
   No te l'inventis ni el copiïs dels exemples d'aquest prompt.
+- M#### SENSE R####: si la gravació no dicta cap R#### i un M#### es dosifica o s'afegeix directament al producte, crea una fila de RECEPTA per a cadascun amb codi_massa = M#### i codi_farcit = null, i llista'ls tots al 'codi_massa' de PRODUCTES. Aquesta regla té prioritat sobre les altres del format M####.
+- No retornis mai una fila de RECEPTA sense cap codi ni quantitat: si no n'hi ha cap, recepta:[].
 
 ═══════════════════════════════════════════
 3. FARCIT (1 fila per matèria primera dins un codi_farcit):
@@ -781,7 +788,7 @@ REGLES ESTRICTES:
 - CAP CODI PERDUT: abans de respondre, repassa la transcripció i fes la llista de tots els codis
   M#### i R#### que l'usuari ha pronunciat. Cada un ha d'aparèixer en alguna de les quatre taules
   (com a codi_massa, codi_farcit, codi_nom_mp o codi d'una fila de composició). Si algun no hi
-  encaixa com a massa ni com a farcit, és una MATÈRIA PRIMERA: posa'l a FARCIT amb els seus kg.
+  encaixa com a massa ni com a farcit, és una MATÈRIA PRIMERA: posa'l a FARCIT amb els seus kg (si no hi ha cap R####, aplica la regla M#### SENSE R####).
 ${PLACEHOLDER_RULE}
 ${DETERMINISM_RULE}
 - Retorna ÚNICAMENT un objecte JSON vàlid. Cap markdown, cap backtick, cap text extra.
@@ -859,6 +866,10 @@ REGLES:
 - MÚLTIPLES RECURSOS PARAL·LELS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs (mateix 'producte', 'pas', 'dia' i 'codi_intervinent').
 - SUBPASSOS d'una mateixa matèria primera: usa sufix decimal al codi_intervinent (M#### → M####.1, M####.2...). El 'pas' segueix sent un índex global únic.
 - Inclou SEMPRE un pas final que representi la sortida/producte acabat (ex: "Encaixat / Paletització").
+- NOMÉS EL PROCÉS: les dades del producte (unitats per palet i per caixa, caixes per palet, pes de la unitat, kg totals de farcit o de massa per palet) les recull una altra extracció. No les repeteixis als 'comentaris' de cap pas, tret que siguin la capacitat o el límit d'aquell pas.
+- TEMPS COMPARTITS: abans d'assignar un temps, decideix si és de cada element o del conjunt. Si una enumeració continua amb "una altra hora" o "una tercera hora", les hores anteriors compten dins del mateix total: reparteix-les entre els elements, no les multipliquis.
+- DOSIFICADORS: cada dosificador que es dicta per al fabricat és un recurs ocupat: crea una fila "Dosificació" per a cadascun, amb 'linia' = "Dosificador Volumétrico #" si se'n dicta el número, i sense temps ni persones (són les del fabricat). Si es pot triar entre diversos ("l'1 o el 2"), una fila per opció, amb 'alternativa_de' apuntant a la primera. Un dosificador no és mai una "Màquina #": és un altre recurs.
+- MATÈRIES PRIMERES: si es dicta que han d'estar preparades abans, crea'n un pas amb el seu dia, encara que no tingui temps.
 - CAP DADA PERDUDA: abans de respondre, repassa la gravació frase per frase. Tot detall del procés sense camp propi va als 'comentaris' del pas on correspongui, amb les seves xifres: composició i capacitats (bandejas per carro, kg per container), límits ("més no es pot augmentar"), qui fa cada subtasca i característiques del producte que afectin el procés.
 ${PLACEHOLDER_RULE}
 ${DETERMINISM_RULE}
@@ -946,7 +957,8 @@ INSTRUCCIONS:
 - Un producte pot tenir DIVERSES masses i DIVERSOS farcits: a recepta, cada fila és una combinació (producte + codi_farcit + codi_massa). Conserva totes les combinacions del base i afegeix-ne o modifica'n només les que l'usuari indiqui. A productes, els camps codi_massa i codi_farcit poden portar diversos codis separats per comes.
 - Els números segueixen les mateixes regles de format que als prompts de veu (decimals per merma, etc.).
 - Conserva TOTS els camps de cada fila del base, també els de temps (minuts_min, minuts_max, temps_quantitat, temps_unitat), frequencia, minuts_abans_produccio, depen_de_pas i alternativa_de, i la numeració de 'pas'.
-- Si canvien els kg, les unitats o les caixes: actualitza 'massa' i els 'comentaris' que citin aquestes xifres. Si es dicta una altra velocitat o un altre temps, actualitza 'temps_per_kg' i els camps de temps. No recalculis cap temps que no s'hagi dictat.
+- Els kg, els grams i les unitats per carro depenen del producte: mai els calculis ni proporcionis els del base. Si la variant té un altre pes o unes altres unitats i no els dicta, deixa a null 'kg_massa_palet', 'kg_farcit_palet', 'grams_per_unitat_farcit', 'grams_per_unit_massa', els kg de recepta, 'unitats_per_carro' i la 'massa' dels passos, i treu dels 'comentaris' les xifres del base que en depenguin. Si les dicta, actualitza-les.
+- Si es dicta una altra velocitat o un altre temps, actualitza 'temps_per_kg' i els camps de temps. No recalculis cap temps que no s'hagi dictat: els ritmes del base (per exemple, minuts per kg) es conserven.
 - Si es dicten les unitats per carro o una restricció de línia, actualitza 'unitats_per_carro' i 'linies_permeses'.
 
 Retorna ÚNICAMENT: {"productes":[...],"recepta":[...],"farcit":[...],"masses":[...],"flux":[...]}
