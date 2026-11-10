@@ -187,6 +187,7 @@ La normalització ignora majúscules, accents i espais repetits.
 | **Editar** una cel·la | Sobreescriu aquell camp a l'acte |
 | **Copiar** | La IA genera una variant completa amb un codi nou i les diferències dictades, i n'anota el base a `basat_en` |
 | **Refer** | Torna a extreure el producte de totes les seves gravacions, o del seu base i les diferències si és una variant. Les files de `productes`, `recepta` i `flux` només se substitueixen en confirmar. No toca `farcit`, `masses` ni `linies` |
+| **Reprocessar** | Extreu cada producte de la seva gravació, bases abans que variants, i deixa el resultat a `reprocessament` sense tocar les dades. En aprovar: el que diu la gravació substitueix el valor desat, un camp que no hi consta conserva el valor actual, els passos es reemplacen i, si la gravació no descriu cap recepta, es manté la que hi ha. En una variant, els valors heretats del base no substitueixen els propis |
 | **Eliminar** (🗑) | Esborra només aquella fila, sense cascada |
 
 ---

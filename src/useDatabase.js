@@ -10,6 +10,7 @@ const TABLE_MAP = {
   flux: 'flux',
   torns: 'torns',
   gravacions: 'gravacions',
+  reprocessament: 'reprocessament',
 }
 
 // Fields that must never be sent to the DB

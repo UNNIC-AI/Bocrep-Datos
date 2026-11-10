@@ -117,6 +117,14 @@ const SCHEMAS = {
       { key: "comentaris",       label: "Comentaris",                 type: "text" },
     ],
   },
+  reprocessament: {
+    label: "Reprocessar", icon: "♻️", voice: false, custom: true,
+    fields: [
+      { key: "producte", label: "Producte", type: "text", req: true },
+      { key: "estat",    label: "Estat",    type: "text" },
+      { key: "error",    label: "Error",    type: "text" },
+    ],
+  },
 };
 
 // La IA de vegades retorna noms en castellà en lloc de català. Normalitza abans de desar.
@@ -183,6 +191,111 @@ function prepareRow(table, row, problems) {
     out[f.key] = v;
   }
   return out;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   REPROCESSAMENT — tornar a extreure els productes des de les gravacions
+   ══════════════════════════════════════════════════════════════ */
+
+// Valors desats que no consten a la gravació o que hi discrepen (docs/informe-productes.md)
+const FLAGGED_PRODUCTS = new Set([
+  "626524", "628324", "229424", "111320", "225948", "226948",
+  "2210848", "265722", "24382", "246210724", "24620924", "24100932",
+]);
+
+const isBlank = v => v === null || v === undefined || v === "";
+
+const QUANTITY_FIELDS = ["kg_massa_palet", "kg_farcit_palet", "grams_per_unitat_farcit", "grams_per_unit_massa"];
+
+const withoutProduct = (data, code) => {
+  const src = { ...data };
+  for (const t of PER_PRODUCT_TABLES) src[t] = (data[t] || []).filter(r => r.producte !== code);
+  return src;
+};
+
+const rowsOfProduct = (data, code) => Object.fromEntries(
+  PER_PRODUCT_TABLES.map(t => [t, (data[t] || []).filter(r => r.producte === code)])
+);
+
+// Productes amb gravació, cada base abans de les seves variants
+function rerunOrder(productes) {
+  const withText = productes.filter(p => p.producte && String(p.transcripcio || "").trim());
+  const byCode = new Map(withText.map(p => [p.producte, p]));
+  const out = [], seen = new Set();
+  const visit = p => {
+    if (seen.has(p.producte)) return;
+    seen.add(p.producte);
+    const marker = parseVariantMarker(p.transcripcio);
+    const base = p.basat_en || marker?.base || null;
+    if (base && byCode.has(base)) visit(byCode.get(base));
+    out.push({ code: p.producte, text: p.transcripcio, base, diff: base ? (marker?.diff ?? p.transcripcio) : null });
+  };
+  withText.forEach(visit);
+  return out;
+}
+
+// El que diu la gravació substitueix el que hi ha desat. Un camp que no hi consta conserva el valor
+// actual, perquè un buit de la IA no l'esborri. En una variant, un valor heretat del base tampoc
+// substitueix el propi: si la variant no l'ha dictat, la gravació no diu res d'aquell camp.
+function mergeWithCurrent(parsed, data, base) {
+  const fill = (table, row, old, baseRow) => {
+    const out = { ...row };
+    for (const { key } of SCHEMAS[table].fields) {
+      const inherited = baseRow && !isBlank(row[key]) && String(row[key]) === String(baseRow[key]);
+      // Els kg i grams del base no serveixen per a una variant d'un altre pes
+      if (inherited && QUANTITY_FIELDS.includes(key)) out[key] = old[key] ?? null;
+      else if (!isBlank(old[key]) && (isBlank(row[key]) || inherited)) out[key] = old[key];
+    }
+    return out;
+  };
+  const sameRecipe = SECONDARY_CHECKS.find(c => c.table === "recepta").matchFn;
+
+  const productes = (parsed.productes || []).map(p => {
+    const old = (data.productes || []).find(r => r.producte === p.producte);
+    return old ? fill("productes", p, old, base?.productes?.[0]) : p;
+  });
+
+  const code = productes[0]?.producte;
+  const oldRecepta = (data.recepta || []).filter(r => r.producte === code);
+  const newRecepta = (parsed.recepta || []).map(r => {
+    const old = oldRecepta.find(o => sameRecipe(r, o));
+    const baseRow = (base?.recepta || []).find(b => sameRecipe(r, { ...b, producte: r.producte }));
+    return old ? fill("recepta", r, old, baseRow) : r;
+  });
+
+  // Una gravació que no descriu cap recepta no pot deixar el producte sense la que ja tenia
+  return { ...parsed, productes, recepta: newRecepta.length ? newRecepta : oldRecepta };
+}
+
+const mergedRerun = (h, data, held) => {
+  const baseCode = h.resultat?.productes?.[0]?.basat_en;
+  return mergeWithCurrent(h.resultat, data, baseCode ? held.get(baseCode)?.resultat : null);
+};
+
+// Codis de massa, farcit o matèria que hi ha ara i no hi serien després d'aprovar
+function vanishingCodes(current, merged) {
+  const codes = groups => new Set(groups.flatMap(([rows, fields]) =>
+    (rows || []).flatMap(r => fields.flatMap(f => splitCodes(r[f])))
+  ).map(c => c.split(".")[0].toUpperCase()));
+  const before = codes([
+    [current.productes, ["codi_massa", "codi_farcit"]],
+    [current.recepta, ["codi_massa", "codi_farcit"]],
+    [current.flux, ["codi_intervinent"]],
+  ]);
+  // Un codi que passa d'un camp a un comentari no s'ha perdut
+  const after = JSON.stringify(merged).toUpperCase();
+  return [...before].filter(c => !after.includes(c)).sort();
+}
+
+// Diferències d'una fila: 'substitueix' un valor existent o 'omple' un camp buit
+function fieldChanges(table, oldRow, newRow) {
+  return SCHEMAS[table].fields
+    .filter(f => f.key !== "transcripcio" && !isBlank(newRow[f.key]))
+    .filter(f => String(newRow[f.key]) !== String(oldRow?.[f.key] ?? ""))
+    .map(f => ({
+      key: f.key, label: f.label, from: oldRow?.[f.key], to: newRow[f.key],
+      kind: isBlank(oldRow?.[f.key]) ? "omple" : "substitueix",
+    }));
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -884,6 +997,8 @@ export default function App() {
   const [redoIsRec, setRedoIsRec] = useState(false);
   // Codi del producte que la previsualització substituirà en confirmar (Refer)
   const [pendRedo, setPendRedo] = useState(null);
+  const [rerunBusy, setRerunBusy] = useState(false);
+  const stopRerun = useRef(false);
   const rRef = useRef(null);
   const eRef = useRef(null);
   const isStoppingRef = useRef(false);
@@ -1090,6 +1205,62 @@ export default function App() {
     return JSON.parse(raw);
   }, []);
 
+  // Les tres crides d'extracció. Retorna les files tal com surten, sense resoldre-les contra la BD.
+  const extractProduct = useCallback(async ({ text, src, redoCode, onStep = () => {} }) => {
+    const existingProducts = src.productes.map(p => p.producte).filter(Boolean).join(", ") || "(cap)";
+    const existingResources = resourceNamesForPrompt(src.linies).join(", ") || "(cap)";
+
+    // Crida 1: Producte + Recepta + Farcit
+    onStep("🤖 (1/3) Processant producte, recepta i farcit...");
+    const res1 = await callAI(
+      PROMPT_PROD_RECEPTA.replace("{{EXISTING_PRODUCTS}}", existingProducts),
+      text,
+      { model: MODEL_REASONING }
+    );
+
+    const proposedProducte = redoCode || res1.productes?.[0]?.producte || res1.productes?.[0]?.producto || "";
+    const existingSteps = JSON.stringify(
+      src.flux.filter(f => exactMatch(f.producte, proposedProducte))
+        .map(({ pas, dia, accio, codi_intervinent, linia }) => ({ pas, dia, accio, codi_intervinent, linia }))
+    );
+    // En refer, el codi és el del producte que se substitueix encara que la IA en digui un altre
+    const own = rows => normalizeAIFields(rows).map(r => redoCode ? { ...r, producte: redoCode } : r);
+
+    // Crida 2: Flux
+    onStep("🤖 (2/3) Processant flux de producció...");
+    // El flux és la sortida més llarga: més marge per no truncar-la (només es paga el que genera)
+    const res2 = await callAI(
+      PROMPT_FLUX
+        .replace("{{EXISTING_RESOURCES}}", existingResources)
+        .replace("{{EXISTING_STEPS}}", existingSteps)
+        .replace("{{PROPOSED_PRODUCTE}}", proposedProducte),
+      text,
+      { maxTokens: 32000 }
+    );
+
+    // Crida 3: Recursos / Línies
+    onStep("🤖 (3/3) Identificant recursos necessaris...");
+    const res3 = await callAI(
+      PROMPT_LINIES
+        .replace("{{EXISTING_RESOURCES}}", existingResources)
+        .replace("{{PROPOSED_FLUX}}", JSON.stringify(res2.flux || [], null, 2)),
+      text
+    );
+
+    const noClassificat = findUnplaced(text, { ...res1, flux: res2.flux || [], linies: res3.linies || [] });
+
+    const parsed = {
+      productes: own((res1.productes || []).map((p, i) => ({ ...p, transcripcio: text, no_classificat: i === 0 ? noClassificat : null }))),
+      recepta:   own(res1.recepta   || []),
+      farcit:    res1.farcit    || [],
+      masses:    res1.masses    || [],
+      flux:      own(res2.flux      || []),
+      linies:    res3.linies    || [],
+    };
+
+    return parsed;
+  }, [callAI]);
+
   /* ─── AI Parse — pipeline de 3 crides sequencials ─── */
   // textOverride i dataOverride els fa servir el reprocessament: just després d'esborrar el
   // producte, 'data' encara no s'ha re-renderitzat i cal treballar amb el snapshot ja filtrat.
@@ -1103,57 +1274,8 @@ export default function App() {
     const src = dataOverride || data;
     setParsing(true);
 
-    const existingProducts = src.productes.map(p => p.producte).filter(Boolean).join(", ") || "(cap)";
-    const existingResources = resourceNamesForPrompt(src.linies).join(", ") || "(cap)";
-
     try {
-      // Crida 1: Producte + Recepta + Farcit
-      setStat("🤖 (1/3) Processant producte, recepta i farcit...");
-      const res1 = await callAI(
-        PROMPT_PROD_RECEPTA.replace("{{EXISTING_PRODUCTS}}", existingProducts),
-        text,
-        { model: MODEL_REASONING }
-      );
-
-      const proposedProducte = redoCode || res1.productes?.[0]?.producte || res1.productes?.[0]?.producto || "";
-      const existingSteps = JSON.stringify(
-        src.flux.filter(f => exactMatch(f.producte, proposedProducte))
-          .map(({ pas, dia, accio, codi_intervinent, linia }) => ({ pas, dia, accio, codi_intervinent, linia }))
-      );
-      // En refer, el codi és el del producte que se substitueix encara que la IA en digui un altre
-      const own = rows => normalizeAIFields(rows).map(r => redoCode ? { ...r, producte: redoCode } : r);
-
-      // Crida 2: Flux
-      setStat("🤖 (2/3) Processant flux de producció...");
-      // El flux és la sortida més llarga: més marge per no truncar-la (només es paga el que genera)
-      const res2 = await callAI(
-        PROMPT_FLUX
-          .replace("{{EXISTING_RESOURCES}}", existingResources)
-          .replace("{{EXISTING_STEPS}}", existingSteps)
-          .replace("{{PROPOSED_PRODUCTE}}", proposedProducte),
-        text,
-        { maxTokens: 32000 }
-      );
-
-      // Crida 3: Recursos / Línies
-      setStat("🤖 (3/3) Identificant recursos necessaris...");
-      const res3 = await callAI(
-        PROMPT_LINIES
-          .replace("{{EXISTING_RESOURCES}}", existingResources)
-          .replace("{{PROPOSED_FLUX}}", JSON.stringify(res2.flux || [], null, 2)),
-        text
-      );
-
-      const noClassificat = findUnplaced(text, { ...res1, flux: res2.flux || [], linies: res3.linies || [] });
-
-      const parsed = {
-        productes: own((res1.productes || []).map((p, i) => ({ ...p, transcripcio: text, no_classificat: i === 0 ? noClassificat : null }))),
-        recepta:   own(res1.recepta   || []),
-        farcit:    res1.farcit    || [],
-        masses:    res1.masses    || [],
-        flux:      own(res2.flux      || []),
-        linies:    res3.linies    || [],
-      };
+      const parsed = await extractProduct({ text, src, redoCode, onStep: setStat });
 
       const { resolved: named, changeLog: changes } = resolveCanonicalNames(parsed, src);
       const { resolved, added } = ensureCompositionStubs(named, src);
@@ -1179,16 +1301,17 @@ export default function App() {
   }, [txt, data]);
 
   /* ─── Confirm pending (save to DB) ─── */
-  const confirmAll = useCallback(async () => {
+  // Retorna true només si tot el lot ha quedat desat
+  const saveBatch = useCallback(async (batch, redo) => {
     // Abans d'escriure res: si alguna fila no és vàlida, no es desa cap taula
     const problems = [];
-    const prepared = Object.fromEntries(CASCADE.map(t => [t, (pend[t] || []).map(r => prepareRow(t, r, problems))]));
+    const prepared = Object.fromEntries(CASCADE.map(t => [t, (batch[t] || []).map(r => prepareRow(t, r, problems))]));
     for (const t of PER_PRODUCT_TABLES)
       if (prepared[t].some(r => !String(r.producte ?? "").trim()))
         problems.push(`${SCHEMAS[t].label}: falta el codi de producte`);
     if (problems.length) {
       setStat(`❌ No s'ha desat res — ${[...new Set(problems)].join("  ·  ")}`);
-      return;
+      return false;
     }
 
     setStat("💾 Guardant a la base de dades...");
@@ -1197,7 +1320,7 @@ export default function App() {
     const recordings = recordingsToAdd(prepared.productes, data.gravacions);
     if (recordings.length) {
       const { error } = await insertRows("gravacions", recordings);
-      if (error) { setStat(`❌ No s'ha desat res: no s'ha pogut guardar la descripció — ${error}`); return; }
+      if (error) { setStat(`❌ No s'ha desat res: no s'ha pogut guardar la descripció — ${error}`); return false; }
     }
 
     let nInserted = 0, nUpdated = 0, nErrors = 0;
@@ -1206,8 +1329,8 @@ export default function App() {
     const newIds = {};    // files noves per taula, per poder desfer un Refer fallit
 
     // En un Refer les files antigues es guarden fins que les noves són a la BD
-    const oldIds = pendRedo
-      ? Object.fromEntries(PER_PRODUCT_TABLES.map(t => [t, data[t].filter(r => r.producte === pendRedo).map(r => r.id)]))
+    const oldIds = redo
+      ? Object.fromEntries(PER_PRODUCT_TABLES.map(t => [t, data[t].filter(r => r.producte === redo).map(r => r.id)]))
       : null;
 
     for (const t of CASCADE) {
@@ -1239,7 +1362,7 @@ export default function App() {
       if (failed.length) remaining[t] = failed;
     }
 
-    if (pendRedo) {
+    if (redo) {
       if (PER_PRODUCT_TABLES.some(t => remaining[t])) {
         // Desfà les files noves: el producte anterior es queda intacte i es pot tornar a confirmar
         for (const t of PER_PRODUCT_TABLES) {
@@ -1263,17 +1386,20 @@ export default function App() {
       setPend(remaining);
       setPvt(pendingTables[0]);
       setStat(`❌ ${parts.join(' · ') || 'Res desat'} — les files no desades continuen a la previsualització. ${errMsgs.join('  ·  ')}`);
-      return;
+      return false;
     }
 
     setPend(null); setPendRedo(null); setTxt(""); txtRef.current = ""; setChangeLog([]);
     if (errMsgs.length) {
       setStat(`❌ ${parts.join(' · ') || 'Res desat'} — ${errMsgs.join('  ·  ')}`);
       await reload();
-      return;
+      return false;
     }
     setStat(`✅ ${parts.join(' · ') || 'Sense canvis nous'}`);
-  }, [pend, pendRedo, data, insertRows, mergeRow, updateCell, deleteIds, reload]);
+    return true;
+  }, [data, insertRows, mergeRow, updateCell, deleteIds, reload]);
+
+  const confirmAll = () => saveBatch(pend, pendRedo);
 
   const editPendCell = (table, ri, key) => {
     const val = prompt(`Editar "${key}":`, pend[table][ri][key] ?? "");
@@ -1321,7 +1447,7 @@ export default function App() {
 
   // Genera un producte complet (files pròpies) a partir del seu base i les diferències.
   // src són les dades contra les quals es resol; redoCode, el producte que substituirà en confirmar.
-  const generateVariant = useCallback(async ({ base, newCode, modText, src, transcripcio, redoCode }) => {
+  const variantRows = useCallback(async ({ base, newCode, modText, src, transcripcio }) => {
     // Recopilar tot el producte base sense metadades
     const stripMeta = r => { const c = { ...r }; delete c.id; delete c.created_at; return c; };
     // Els codis poden venir de recepta o de productes, i aquest darrer pot portar-ne diversos
@@ -1361,7 +1487,11 @@ export default function App() {
       flux:    normalizeAIFields((res.flux || []).map(f => ({ ...f, producte: newCode }))),
       linies:  [],
     };
+    return parsed;
+  }, [callAI]);
 
+  const generateVariant = useCallback(async ({ base, newCode, modText, src, transcripcio, redoCode }) => {
+    const parsed = await variantRows({ base, newCode, modText, src, transcripcio });
     const { resolved: named, changeLog: changes } = resolveCanonicalNames(parsed, src);
     const { resolved, added } = ensureCompositionStubs(named, src);
     setPend(resolved);
@@ -1369,7 +1499,7 @@ export default function App() {
     setChangeLog(changes);
     setPvt(CASCADE.find(t => resolved[t]?.length > 0) || "productes");
     return added;
-  }, [callAI]);
+  }, [variantRows]);
 
   const processDuplicateWithVoice = useCallback(async () => {
     const newCode = dupNewCode.trim();
@@ -1472,6 +1602,84 @@ export default function App() {
     await parseVoice({ textOverride: text, dataOverride: src, redoCode: code });
   }, [redoSrc, redoText, data, parseVoice, generateVariant, stopRedoRec]);
 
+  /* ─── Reprocessar: extreu cada producte a la zona d'espera, sense tocar les dades ─── */
+  // Sense codis, processa tot el que encara no té resultat
+  const runRerun = useCallback(async codes => {
+    const held = new Map(data.reprocessament.map(r => [r.producte, r]));
+    const wanted = codes ? new Set(codes) : null;
+    const queue = rerunOrder(data.productes).filter(q => wanted
+      ? wanted.has(q.code)
+      : !held.has(q.code) || held.get(q.code).estat === "error");
+    if (!queue.length) { setStat("No hi ha cap producte per processar."); return; }
+
+    stopRerun.current = false;
+    setRerunBusy(true);
+    let done = 0;
+    for (const q of queue) {
+      if (stopRerun.current) break;
+      setStat(`🤖 ${done + 1}/${queue.length} · Processant ${q.code}...`);
+      const src = withoutProduct(data, q.code);
+      let row;
+      try {
+        let parsed;
+        if (q.base) {
+          // La variant parteix del resultat nou del seu base, no de les files antigues
+          const b = held.get(q.base);
+          if (!b || !["pendent", "aprovat"].includes(b.estat)) throw new Error(`Cal processar primer el base ${q.base}`);
+          if (b.estat === "pendent") {
+            const merged = mergeWithCurrent(b.resultat, data, null);
+            for (const t of PER_PRODUCT_TABLES)
+              src[t] = [...src[t].filter(r => r.producte !== q.base), ...(merged[t] || [])];
+          }
+          parsed = await variantRows({ base: q.base, newCode: q.code, modText: q.diff, src, transcripcio: q.text });
+        } else {
+          parsed = await extractProduct({ text: q.text, src, redoCode: q.code });
+        }
+        row = { producte: q.code, estat: "pendent", resultat: parsed, error: null };
+      } catch (err) {
+        console.error(err);
+        row = { producte: q.code, estat: "error", resultat: null, error: err.message };
+      }
+      if (held.has(q.code)) await deleteIds("reprocessament", [held.get(q.code).id]);
+      const { inserted, error } = await insertRows("reprocessament", [row]);
+      if (error) {
+        setStat(`❌ No s'ha pogut guardar el resultat de ${q.code}: ${error}`);
+        setRerunBusy(false);
+        return;
+      }
+      held.set(q.code, inserted[0]);
+      done++;
+    }
+    setRerunBusy(false);
+    setStat(`✅ ${done} de ${queue.length} processats. Revisa'ls i aprova'ls un per un.`);
+  }, [data, extractProduct, variantRows, insertRows, deleteIds]);
+
+  const approveRerun = useCallback(async h => {
+    const code = h.producte;
+    const held = new Map(data.reprocessament.map(r => [r.producte, r]));
+    const merged = mergedRerun(h, data, held);
+    const lost = vanishingCodes(rowsOfProduct(data, code), merged);
+    if (lost.length && !window.confirm(`Aquests codis desapareixeran de ${code}: ${lost.join(", ")}.\n\nAprovar igualment?`)) return;
+
+    const src = withoutProduct(data, code);
+    const { resolved: named } = resolveCanonicalNames(merged, src);
+    const { resolved } = ensureCompositionStubs(named, src);
+
+    setRerunBusy(true);
+    const saved = await saveBatch(resolved, code);
+    if (saved) {
+      const { error } = await updateCell("reprocessament", h.id, "estat", "aprovat");
+      if (error) setStat(`❌ ${code} s'ha desat, però no s'ha pogut marcar com a aprovat: ${error}`);
+      else setStat(`✅ ${code} aprovat i desat.`);
+    }
+    setRerunBusy(false);
+  }, [data, saveBatch, updateCell]);
+
+  const discardRerun = useCallback(async h => {
+    const { error } = await updateCell("reprocessament", h.id, "estat", "descartat");
+    setStat(error ? `❌ ${error}` : `${h.producte} descartat. Les dades no s'han tocat.`);
+  }, [updateCell]);
+
   /* ─── Export ─── */
   const exportJSON = () => {
     const clean = {};
@@ -1566,7 +1774,7 @@ export default function App() {
             <p style={{ margin: 0, fontSize: 11, color: C.t3 }}>
               {sc.fields.length} camps · {data[act].length} registres
               {isV && <span style={{ color: C.p, marginLeft: 10 }}>🎙 Veu</span>}
-              {!isV && <span style={{ color: C.o, marginLeft: 10 }}>✏️ Manual</span>}
+              {!isV && !sc.custom && <span style={{ color: C.o, marginLeft: 10 }}>✏️ Manual</span>}
             </p>
             {act === "productes" && (
               <p style={{ margin: "4px 0 0", fontSize: 10, color: C.t3 }}>
@@ -1660,7 +1868,7 @@ export default function App() {
           </div>
         )}
 
-        {!isV && (
+        {!isV && !sc.custom && (
           <div style={{ padding: "12px 24px", borderBottom: `1px solid ${C.b1}`, background: C.s1, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 11, color: C.t2 }}>✏️ Entrada manual</span>
             <Btn onClick={openManual} style={{ padding: "6px 16px", background: C.acD, border: `1px solid ${C.ac}`, color: C.ac, fontSize: 11 }}>+ Afegir registre</Btn>
@@ -1842,6 +2050,11 @@ export default function App() {
         {/* ═══ DATA TABLE ═══ */}
         <div style={{ flex: 1, padding: "16px 24px", overflowX: "auto", overflowY: "auto" }}>
           {(() => {
+            if (sc.custom) return (
+              <RerunPanel data={data} busy={rerunBusy} onRun={runRerun}
+                onStop={() => { stopRerun.current = true; }}
+                onApprove={approveRerun} onDiscard={discardRerun} />
+            );
             // Filtered + sorted rows with original indices preserved
             const displayRows = act === "flux"
               ? data[act]
@@ -2180,6 +2393,165 @@ export default function App() {
         ::-webkit-scrollbar-thumb{background:${C.b1};border-radius:3px}
         select option{background:${C.s1};color:${C.t1}}
       `}</style>
+    </div>
+  );
+}
+
+const RERUN_STATUS = {
+  pendent:   { label: "Per revisar", color: C.o },
+  aprovat:   { label: "Aprovat",     color: C.g },
+  descartat: { label: "Descartat",   color: C.t3 },
+  error:     { label: "Error",       color: C.r },
+};
+
+const RERUN_STEP_COLUMNS = [
+  ["pas", "Pas"], ["dia", "Dia"], ["accio", "Què es fa"], ["linia", "Recurs"], ["temps_per_kg", "Temps"],
+  ["minuts_min", "Min"], ["minuts_max", "Màx"], ["temps_quantitat", "Quant."], ["temps_unitat", "Unitat"],
+  ["persones_necessaries", "Pers."], ["perfils_de_persona", "Perfil"], ["frequencia", "Freqüència"],
+  ["minuts_abans_produccio", "Abans"], ["depen_de_pas", "Depèn"], ["alternativa_de", "Alt."], ["comentaris", "Comentaris"],
+];
+
+const sectionTitle = { fontSize: 11, fontWeight: 700, color: "#94A3B5", margin: "16px 0 6px", textTransform: "uppercase", letterSpacing: 0.5 };
+
+function RerunSteps({ rows }) {
+  const sorted = [...rows].sort((a, b) => (a.dia - b.dia) || (a.pas - b.pas));
+  return (
+    <table style={{ borderCollapse: "collapse", fontSize: 11, width: "100%" }}>
+      <thead><tr>{RERUN_STEP_COLUMNS.map(([k, l]) => <th key={k} style={thS}>{l}</th>)}</tr></thead>
+      <tbody>
+        {sorted.map((r, i) => (
+          <tr key={i}>{RERUN_STEP_COLUMNS.map(([k]) => <td key={k} style={tdS}>{r[k] ?? ""}</td>)}</tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function RerunChanges({ changes }) {
+  if (!changes.length) return <div style={{ fontSize: 11, color: C.t3 }}>Sense canvis.</div>;
+  return (
+    <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+      <thead><tr><th style={thS}>Camp</th><th style={thS}>Ara</th><th style={thS}>Després</th></tr></thead>
+      <tbody>
+        {changes.map(c => (
+          <tr key={c.key}>
+            <td style={tdS}>{c.label}</td>
+            <td style={{ ...tdS, color: C.t3 }}>{String(c.from ?? "—")}</td>
+            <td style={{ ...tdS, color: c.kind === "substitueix" ? C.o : C.g }}>{String(c.to)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function RerunDetail({ row, data, held, busy, onApprove, onDiscard, onRun }) {
+  if (row.estat === "error") return (
+    <div style={{ fontSize: 12, color: C.r }}>{row.error}
+      <div><Btn disabled={busy} onClick={() => onRun([row.producte])} style={{ marginTop: 10, padding: "6px 14px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 11 }}>↻ Tornar a processar</Btn></div>
+    </div>
+  );
+
+  const merged = mergedRerun(row, data, held);
+  const current = rowsOfProduct(data, row.producte);
+  const product = merged.productes?.[0] || {};
+  const productChanges = fieldChanges("productes", current.productes[0], product);
+  const lost = vanishingCodes(current, merged);
+  const reviewed = row.estat !== "pendent";
+
+  return (
+    <div>
+      {lost.length > 0 && (
+        <div style={{ padding: "8px 12px", borderRadius: 6, background: C.rD, border: `1px solid ${C.r}`, color: C.r, fontSize: 11, marginBottom: 10 }}>
+          ⚠️ Aquests codis desapareixeran en aprovar: {lost.join(", ")}
+        </div>
+      )}
+      {product.no_classificat && (
+        <div style={{ padding: "8px 12px", borderRadius: 6, background: C.oD, border: `1px solid ${C.o}`, color: C.o, fontSize: 11, marginBottom: 10, whiteSpace: "pre-wrap" }}>
+          ⚠️ Frases amb xifres que no consten enlloc:{"\n"}{product.no_classificat}
+        </div>
+      )}
+
+      <div style={sectionTitle}>Producte</div>
+      <RerunChanges changes={productChanges} />
+
+      <div style={sectionTitle}>Recepta ({current.recepta.length} → {merged.recepta.length})</div>
+      {merged.recepta.map((r, i) => {
+        const sameRecipe = SECONDARY_CHECKS.find(c => c.table === "recepta").matchFn;
+        const old = current.recepta.find(o => sameRecipe(r, o));
+        return (
+          <div key={i} style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: C.t2, marginBottom: 3 }}>{r.codi_farcit || "—"} · {r.codi_massa || "—"}{old ? "" : " (nova)"}</div>
+            <RerunChanges changes={fieldChanges("recepta", old, r)} />
+          </div>
+        );
+      })}
+
+      <div style={sectionTitle}>Passos ({current.flux.length} → {(merged.flux || []).length}). Els nous substitueixen els actuals</div>
+      <div style={{ overflowX: "auto" }}><RerunSteps rows={merged.flux || []} /></div>
+      <details style={{ marginTop: 10 }}>
+        <summary style={{ fontSize: 11, color: C.t3, cursor: "pointer" }}>Veure els passos actuals</summary>
+        <div style={{ overflowX: "auto", marginTop: 6 }}><RerunSteps rows={current.flux} /></div>
+      </details>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        <Btn disabled={busy || reviewed} onClick={() => onApprove(row)} style={{ padding: "8px 20px", background: reviewed ? C.s2 : C.g, border: "none", color: reviewed ? C.t3 : C.bg, fontSize: 12 }}>✓ Aprovar i desar</Btn>
+        <Btn disabled={busy || reviewed} onClick={() => onDiscard(row)} style={{ padding: "8px 18px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 12 }}>Descartar</Btn>
+        <Btn disabled={busy} onClick={() => onRun([row.producte])} style={{ padding: "8px 18px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 12 }}>↻ Tornar a processar</Btn>
+      </div>
+    </div>
+  );
+}
+
+function RerunPanel({ data, busy, onRun, onStop, onApprove, onDiscard }) {
+  const [codes, setCodes] = useState("24100832, 24382, 236948");
+  const [open, setOpen] = useState(null);
+  const held = new Map(data.reprocessament.map(r => [r.producte, r]));
+  const queue = rerunOrder(data.productes);
+  const names = new Map(data.productes.map(p => [p.producte, p.grup]));
+  const left = queue.filter(q => !held.has(q.code) || held.get(q.code).estat === "error").length;
+
+  const runAll = () => {
+    if (window.confirm(`Es processaran ${left} productes amb la IA, cosa que té un cost. Les dades no es tocaran fins que els aprovis. Continuar?`)) onRun(null);
+  };
+
+  return (
+    <div>
+      <p style={{ margin: "0 0 12px", fontSize: 11, color: C.t2, lineHeight: 1.7 }}>
+        Torna a extreure cada producte de la seva gravació. El resultat queda en espera i les dades no canvien fins que aproves el producte.
+      </p>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
+        <input value={codes} onChange={e => setCodes(e.target.value)} disabled={busy} style={{ ...inpS, width: 280, marginTop: 0 }} />
+        <Btn disabled={busy} onClick={() => onRun(splitCodes(codes))} style={{ padding: "7px 16px", background: C.acD, border: `1px solid ${C.ac}`, color: C.ac, fontSize: 11 }}>🤖 Processar aquests</Btn>
+        <Btn disabled={busy || !left} onClick={runAll} style={{ padding: "7px 16px", background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 11 }}>Processar tots els pendents ({left})</Btn>
+        {busy && <Btn onClick={onStop} style={{ padding: "7px 16px", background: C.rD, border: `1px solid ${C.r}`, color: C.r, fontSize: 11 }}>⏹ Aturar</Btn>}
+      </div>
+
+      <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
+        <thead><tr>{["Codi", "Producte", "Base", "Estat", ""].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+        <tbody>
+          {queue.map(q => {
+            const row = held.get(q.code);
+            const status = row ? RERUN_STATUS[row.estat] : null;
+            return [
+              <tr key={q.code} onClick={() => row && setOpen(open === q.code ? null : q.code)} style={{ cursor: row ? "pointer" : "default" }}>
+                <td style={tdS}>{q.code}{FLAGGED_PRODUCTS.has(q.code) && <span title="Té valors que no consten a la gravació" style={{ color: C.o, marginLeft: 6 }}>⚠</span>}</td>
+                <td style={tdS}>{names.get(q.code)}</td>
+                <td style={{ ...tdS, color: C.t3 }}>{q.base || ""}</td>
+                <td style={{ ...tdS, color: status?.color || C.t3 }}>{status?.label || "Sense processar"}</td>
+                <td style={{ ...tdS, color: C.t3 }}>{row ? (open === q.code ? "▲" : "▼") : ""}</td>
+              </tr>,
+              open === q.code && row && (
+                <tr key={q.code + "-detail"}>
+                  <td colSpan={5} style={{ padding: "14px 16px", background: C.s1, borderBottom: `1px solid ${C.b1}` }}>
+                    <RerunDetail row={row} data={data} held={held} busy={busy} onApprove={onApprove} onDiscard={onDiscard} onRun={onRun} />
+                  </td>
+                </tr>
+              ),
+            ];
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

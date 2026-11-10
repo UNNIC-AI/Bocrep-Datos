@@ -130,6 +130,16 @@ create table if not exists gravacions (
   text          text not null
 );
 
+-- 9. REPROCESSAMENT (resultat en espera d'un producte; no afecta les dades fins que s'aprova)
+create table if not exists reprocessament (
+  id            uuid primary key default gen_random_uuid(),
+  created_at    timestamptz default now(),
+  producte      text,
+  estat         text,
+  resultat      jsonb,
+  error         text
+);
+
 -- ══════════════════════════════════════════════════════════
 -- MIGRACIONS (executa si les taules ja existien al teu projecte)
 -- ══════════════════════════════════════════════════════════
@@ -159,6 +169,9 @@ ALTER TABLE productes ADD COLUMN IF NOT EXISTS no_classificat text;
 UPDATE productes
    SET basat_en = substring(transcripcio from '^\[Duplicat de ([^\]]+)\]')
  WHERE basat_en IS NULL AND transcripcio LIKE '[Duplicat de %';
+
+-- 265222 és el codi antic de 265722: les variants fetes llavors encara l'anomenen
+UPDATE productes SET basat_en = '265722' WHERE basat_en = '265222';
 
 -- RECEPTA
 ALTER TABLE recepta ADD COLUMN IF NOT EXISTS kg_farcit_palet numeric;
@@ -203,6 +216,7 @@ alter table linies    enable row level security;
 alter table flux      enable row level security;
 alter table torns     enable row level security;
 alter table gravacions enable row level security;
+alter table reprocessament enable row level security;
 
 -- Política oberta (qualsevol pot llegir/escriure amb la anon key)
 -- Els "drop" permeten tornar a executar aquest fitxer sencer
@@ -213,6 +227,7 @@ drop policy if exists "Allow all" on masses;
 drop policy if exists "Allow all" on linies;
 drop policy if exists "Allow all" on flux;
 drop policy if exists "Allow all" on torns;
+drop policy if exists "Allow all" on reprocessament;
 create policy "Allow all" on productes for all using (true) with check (true);
 create policy "Allow all" on recepta   for all using (true) with check (true);
 create policy "Allow all" on farcit    for all using (true) with check (true);
@@ -220,6 +235,7 @@ create policy "Allow all" on masses    for all using (true) with check (true);
 create policy "Allow all" on linies    for all using (true) with check (true);
 create policy "Allow all" on flux      for all using (true) with check (true);
 create policy "Allow all" on torns     for all using (true) with check (true);
+create policy "Allow all" on reprocessament for all using (true) with check (true);
 
 -- Gravacions: sense política d'update ni delete, la BD rebutja qualsevol canvi o esborrat
 drop policy if exists "Read" on gravacions;
