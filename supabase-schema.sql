@@ -173,6 +173,10 @@ UPDATE productes
 -- 265222 és el codi antic de 265722: les variants fetes llavors encara l'anomenen
 UPDATE productes SET basat_en = '265722' WHERE basat_en = '265222';
 
+-- 24382 (50 g) tenia els grams copiats del seu base de 90 g: es calculen dels seus kg per palet
+UPDATE recepta SET grams_per_unitat_farcit = 24.74, grams_per_unit_massa = 44.46
+ WHERE producte = '24382' AND grams_per_unitat_farcit = 54.64 AND grams_per_unit_massa = 61.94;
+
 -- RECEPTA
 ALTER TABLE recepta ADD COLUMN IF NOT EXISTS kg_farcit_palet numeric;
 ALTER TABLE recepta ADD COLUMN IF NOT EXISTS kg_massa_palet numeric;
