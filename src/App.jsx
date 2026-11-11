@@ -1787,7 +1787,7 @@ export default function App() {
           <div style={{ fontSize: 10, color: C.t3, marginBottom: 8 }}>{totalRows} registres totals</div>
           <Btn onClick={exportJSON} style={{ width: "100%", padding: 7, background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 10, justifyContent: "center", marginBottom: 4 }}>⬇ Exportar tot (JSON)</Btn>
           <Btn onClick={exportCSV} style={{ width: "100%", padding: 7, background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 10, justifyContent: "center" }}>⬇ {sc.label} (CSV)</Btn>
-          <Btn onClick={() => window.open("?vista=pendientes", "_blank")} style={{ width: "100%", padding: 7, marginTop: 4, background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 10, justifyContent: "center" }}>📋 Pendents per al client</Btn>
+          <Btn onClick={() => window.open("?vista=completar", "_blank")} style={{ width: "100%", padding: 7, marginTop: 4, background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 10, justifyContent: "center" }}>📋 Omplir pendents amb el client</Btn>
           <Btn onClick={() => window.open("?vista=catalogo", "_blank")} style={{ width: "100%", padding: 7, marginTop: 4, background: C.s2, border: `1px solid ${C.b1}`, color: C.t2, fontSize: 10, justifyContent: "center" }}>📚 Catàleg per al client</Btn>
         </div>}
       </aside>

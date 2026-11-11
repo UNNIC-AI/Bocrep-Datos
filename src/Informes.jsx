@@ -1,10 +1,12 @@
 import { useMemo } from 'react'
 import { useDatabase } from './useDatabase'
 import { findGaps, stepsOf, isBlank } from './planner'
+import Completar, { COMPLETAR_CSS } from './Completar'
 
 // Vistes de només lectura per lliurar al client, en castellà i pensades per imprimir:
 //   ?vista=pendientes → el que falta omplir perquè el planificador funcioni
 //   ?vista=catalogo   → la fitxa de cada producte, també descarregable en Excel
+//   ?vista=completar  → pantalla per omplir el que falta amb el client, reunió per reunió
 
 const FREQ = { cada_produccio: 'Cada producción', final_jornada: 'Final de jornada', final_setmana: 'Final de semana', altres: 'Otra' }
 const UNIT = { fix: '', kg: 'kg', unitat: 'unidades', caixa: 'cajas', carro: 'carros', container: 'containers', bandeja: 'bandejas', palet: 'palets' }
@@ -124,11 +126,12 @@ const CSS = `
 function Bar({ vista, data }) {
   return (
     <div className="bar">
-      <a href="?vista=pendientes" className={vista === 'pendientes' ? 'on' : ''}>Pendientes de rellenar</a>
+      <a href="?vista=completar" className={vista === 'completar' ? 'on' : ''}>Rellenar datos</a>
+      <a href="?vista=pendientes" className={vista === 'pendientes' ? 'on' : ''}>Pendientes (imprimir)</a>
       <a href="?vista=catalogo" className={vista === 'catalogo' ? 'on' : ''}>Catálogo de productos</a>
       <span className="sp" />
       {vista === 'catalogo' && <button onClick={() => downloadExcel(data)}>⬇ Descargar Excel</button>}
-      <button onClick={() => window.print()}>🖨 Imprimir / PDF</button>
+      {vista !== 'completar' && <button onClick={() => window.print()}>🖨 Imprimir / PDF</button>}
     </div>
   )
 }
@@ -262,13 +265,16 @@ function Catalogo({ data }) {
 }
 
 export default function Informes({ vista }) {
-  const { data, loading } = useDatabase()
+  const db = useDatabase()
+  const { data, loading } = db
   return (
     <div className="inf">
-      <style>{CSS}</style>
+      <style>{CSS + COMPLETAR_CSS}</style>
       <Bar vista={vista} data={data} />
       {loading ? <p className="muted">Cargando datos…</p>
-        : vista === 'catalogo' ? <Catalogo data={data} /> : <Pendientes data={data} />}
+        : vista === 'catalogo' ? <Catalogo data={data} />
+        : vista === 'completar' ? <Completar data={data} db={db} />
+        : <Pendientes data={data} />}
     </div>
   )
 }

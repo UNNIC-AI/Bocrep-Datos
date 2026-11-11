@@ -287,5 +287,29 @@ export function useDatabase() {
     return { error: null }
   }, [])
 
-  return { data, loading, insertRows, mergeRow, updateCell, deleteRow, deleteIds, reload: loadAll }
+  // Desa els mateixos valors a moltes files alhora (una resposta que val per a molts passos)
+  const updateRows = useCallback(async (tableKey, ids, values) => {
+    if (!ids.length) return { error: null }
+    const clean = cleanRow(values)
+    if (supabase) {
+      for (let i = 0; i < ids.length; i += 200) {
+        const { error } = await supabase.from(TABLE_MAP[tableKey]).update(clean).in('id', ids.slice(i, i + 200))
+        if (error) {
+          console.error(`Update error:`, error)
+          return { error: error.message || String(error) }
+        }
+      }
+    }
+    const set = new Set(ids)
+    setData(prev => {
+      const next = { ...prev, [tableKey]: prev[tableKey].map(r => set.has(r.id) ? { ...r, ...clean } : r) }
+      if (!supabase) {
+        try { localStorage.setItem('produccio_data', JSON.stringify(next)) } catch {}
+      }
+      return next
+    })
+    return { error: null }
+  }, [])
+
+  return { data, loading, insertRows, mergeRow, updateCell, updateRows, deleteRow, deleteIds, reload: loadAll }
 }

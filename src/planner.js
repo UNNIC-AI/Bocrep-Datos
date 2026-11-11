@@ -31,7 +31,14 @@ export const COMMON_OPERATIONS = [
 // Un pas de dosificació ocupa el dosificador durant el fabricat: el seu temps és el del fabricat
 const SHARES_PRODUCTION_TIME = /^dosificaci[óo]$/i
 
-const PRODUCT_FIELDS = [
+// Famílies de producte: algunes dades (unitats per carro) solen ser iguals dins d'una família
+const FAMILIES = [
+  ['Crepes', /cr[eêé]p/i], ['Rolls', /(^|\s)rol/i], ['Burritos', /burrito/i], ['Tacos', /(^|\s)taco/i],
+  ['Quesadillas', /quesadilla/i], ['Miniflautas', /flauta/i],
+]
+export const familyOf = name => FAMILIES.find(([, re]) => re.test(name || ''))?.[0] || 'Otros'
+
+export const PRODUCT_FIELDS = [
   { key: 'unitats_per_palet', q: '¿Cuántas unidades hay en un palet?' },
   { key: 'caixes_per_palet', q: '¿Cuántas cajas hay en un palet?' },
   { key: 'unitats_per_caixa', q: '¿Cuántas unidades van en una caja?' },
@@ -64,20 +71,21 @@ function stepsOf(flux, code) {
 function productGaps(p, data) {
   const code = p.producte
   const questions = []
-  const ask = (on, q, kind = 'dada') => questions.push({ on, q, kind })
+  // 'target' diu on es desa la resposta: un camp del producte o les files d'un pas
+  const ask = (on, q, kind = 'dada', target = { table: 'productes', ids: [p.id], field: on }) => questions.push({ on, q, kind, target })
 
-  if (isBlank(code)) ask('Código', 'Este producto no tiene código. ¿Cuál es?', 'codi')
+  if (isBlank(code)) ask('Código', 'Este producto no tiene código. ¿Cuál es?', 'codi', { table: 'productes', ids: [p.id], field: 'producte' })
   // Sense gravació, tota la resta sortirà d'ella quan es gravi
   if (isBlank(p.transcripcio)) {
-    ask('Grabación', 'No hay grabación de este producto: hay que grabarlo como los demás.', 'gravacio')
-    return { code, name: p.grup || '', questions, common: [], steps: 0 }
+    ask('Grabación', 'No hay grabación de este producto: hay que grabarlo como los demás.', 'gravacio', null)
+    return { id: p.id, code, name: p.grup || '', family: familyOf(p.grup), questions, common: [], steps: 0 }
   }
 
   for (const f of PRODUCT_FIELDS) if (isBlank(p[f.key])) ask(f.key, f.q)
 
   // Massa i farcit: el codi sense kg, o res de res
   for (const [codeKey, kgKey, name] of [['codi_massa', 'kg_massa_palet', 'masa'], ['codi_farcit', 'kg_farcit_palet', 'relleno']]) {
-    if (isBlank(p[codeKey]) && isBlank(p[kgKey])) ask(codeKey, `¿Lleva ${name}? Si lleva, ¿qué código y cuántos kg por palet?`)
+    if (isBlank(p[codeKey]) && isBlank(p[kgKey])) ask(codeKey, `¿Lleva ${name}? Si lleva, ¿qué código y cuántos kg por palet?`, 'dada', { table: 'productes', ids: [p.id], field: codeKey, field2: kgKey })
     else if (isBlank(p[kgKey])) ask(kgKey, `¿Cuántos kg de ${name} (${p[codeKey]}) se necesitan por palet?`)
     else if (isBlank(p[codeKey])) ask(codeKey, `¿Qué código tiene la ${name} (${p[kgKey]} kg por palet)?`)
   }
@@ -85,7 +93,7 @@ function productGaps(p, data) {
   if (!isBlank(p.no_classificat)) ask('no_classificat', `La grabación dice estas cifras y no sabemos a qué corresponden: «${p.no_classificat}»`)
 
   const steps = stepsOf(data.flux, code)
-  if (!isBlank(code) && !isBlank(p.transcripcio) && steps.length === 0) ask('Pasos', 'No tiene pasos: hay que procesar la grabación.', 'gravacio')
+  if (!isBlank(code) && !isBlank(p.transcripcio) && steps.length === 0) ask('Pasos', 'No tiene pasos: hay que procesar la grabación.', 'gravacio', null)
 
   const common = []
   for (const s of steps) {
@@ -96,19 +104,21 @@ function productGaps(p, data) {
     const noPeople = s.rows.some(hasTime) && people.length === 0
     const noProfile = people.some(n => Number(n) > 0) && !s.rows.some(r => !isBlank(r.perfils_de_persona))
     // Les operacions comunes es pregunten una sola vegada per a tots els productes
+    const ids = s.rows.map(r => r.id)
     if (op) {
-      if (noTime) common.push(op.key + ':temps')
-      if (noPeople) common.push(op.key + ':persones')
-      if (noProfile) common.push(op.key + ':perfil')
+      if (noTime) common.push({ key: op.key, what: 'temps', ids })
+      if (noPeople) common.push({ key: op.key, what: 'persones', ids })
+      if (noProfile) common.push({ key: op.key, what: 'perfil', ids })
     } else {
-      if (noTime) ask(`pas ${s.pas}`, `${label}: ¿cuánto tarda? (tiempo fijo, o por kg, caja, carro o palet)`, 'temps')
-      if (noPeople) ask(`pas ${s.pas}`, `${label}: ¿cuántas personas y de qué perfil? (o «nadie», o «lo hace quien ya está en otro paso»)`, 'persones')
-      if (noProfile) ask(`pas ${s.pas}`, `${label}: ¿qué perfil tienen las ${Math.max(...people.map(Number))} persona(s)?`, 'persones')
+      const step = { table: 'flux', ids }
+      if (noTime) ask(`pas ${s.pas}`, `${label}: ¿cuánto tarda? (tiempo fijo, o por kg, caja, carro o palet)`, 'temps', step)
+      if (noPeople) ask(`pas ${s.pas}`, `${label}: ¿cuántas personas y de qué perfil? (o «nadie», o «lo hace quien ya está en otro paso»)`, 'persones', step)
+      if (noProfile) ask(`pas ${s.pas}`, `${label}: ¿qué perfil tienen las ${Math.max(...people.map(Number))} persona(s)?`, 'perfil', step)
     }
-    if (!s.rows.some(r => !isBlank(r.frequencia))) ask(`pas ${s.pas}`, `${label}: ¿se hace en cada producción, al final de la jornada o de la semana?`)
+    if (!s.rows.some(r => !isBlank(r.frequencia))) ask(`pas ${s.pas}`, `${label}: ¿se hace en cada producción, al final de la jornada o de la semana?`, 'frequencia', { table: 'flux', ids })
   }
 
-  return { code, name: p.grup || '', questions, common: [...new Set(common)], steps: steps.length }
+  return { id: p.id, code, name: p.grup || '', family: familyOf(p.grup), questions, common, steps: steps.length }
 }
 
 export function findGaps(data) {
@@ -119,9 +129,11 @@ export function findGaps(data) {
   // Per a cada operació comuna: quins productes hi tenen buits i de quina mena
   const operations = COMMON_OPERATIONS
     .map(o => {
-      const missing = ['temps', 'persones', 'perfil'].filter(w => products.some(p => p.common.includes(`${o.key}:${w}`)))
-      const products_ = products.filter(p => p.common.some(c => c.startsWith(o.key + ':'))).map(p => p.code)
-      return { ...o, missing, products: products_ }
+      const of = what => products.flatMap(p => p.common.filter(c => c.key === o.key && c.what === what).flatMap(c => c.ids))
+      const ids = { temps: of('temps'), persones: of('persones'), perfil: of('perfil') }
+      const missing = Object.keys(ids).filter(w => ids[w].length)
+      const products_ = products.filter(p => p.common.some(c => c.key === o.key)).map(p => p.code)
+      return { ...o, missing, ids, products: products_ }
     })
     .filter(o => o.products.length)
 
@@ -132,13 +144,16 @@ export function findGaps(data) {
     if (!profileUse.has(prof)) profileUse.set(prof, new Set())
     profileUse.get(prof).add(f.producte)
   }
-  const profiles = [...profileUse].map(([name, set]) => ({ name, products: set.size })).sort((a, b) => b.products - a.products)
+  // Un perfil està cobert quan hi ha almenys una persona d'aquest tipus a Torns
+  const staffed = new Set(data.torns.map(t => String(t.tipus_personal || '').trim().toLowerCase()))
+  const profiles = [...profileUse].map(([name, set]) => ({ name, products: set.size, staff: data.torns.filter(t => String(t.tipus_personal || '').trim().toLowerCase() === name.toLowerCase()), done: staffed.has(name.toLowerCase()) }))
+    .sort((a, b) => b.products - a.products)
 
   const resourceUse = new Map()
   for (const f of data.flux) if (!isBlank(f.linia)) resourceUse.set(f.linia, (resourceUse.get(f.linia) || new Set()).add(f.producte))
   const resources = data.linies
     .filter(l => isBlank(l.quantitat))
-    .map(l => ({ name: l.linia, products: resourceUse.get(l.linia)?.size || 0 }))
+    .map(l => ({ id: l.id, name: l.linia, products: resourceUse.get(l.linia)?.size || 0 }))
     .sort((a, b) => b.products - a.products)
 
   return {
