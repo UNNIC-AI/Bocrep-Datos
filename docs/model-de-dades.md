@@ -117,7 +117,7 @@ Identitat a l'app: `producte` + `dia` + `pas` + `linia`; si falta `pas`, `produc
 | `minuts_min`, `minuts_max` | numeric | El temps en minuts. Iguals si és un sol valor, diferents si és un marge |
 | `temps_quantitat` | numeric | Quantitat a què corresponen els minuts. Null si el temps és fix |
 | `temps_unitat` | text | `fix`, `kg`, `unitat`, `caixa`, `carro`, `container`, `bandeja` o `palet` |
-| `persones_necessaries` | numeric | 0 només si el pas passa sol (túnel, espera) |
+| `persones_necessaries` | numeric | 0 només si el pas passa sol (túnel, espera). Són les persones de tot el pas: si el pas té diverses files (recursos en paral·lel), cada fila repeteix el nombre i el pas en necessita el màxim, no la suma |
 | `perfils_de_persona` | text | Llista tancada. `A / B` vol dir que ho pot fer qualsevol dels dos |
 | `es_pot_parar` | text | `Sí` / `No` |
 | `frequencia` | text | `cada_produccio`, `final_jornada`, `final_setmana` o `altres` |
