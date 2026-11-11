@@ -262,14 +262,23 @@ function mergeWithCurrent(parsed, data, base) {
   const oldRecepta = (data.recepta || []).filter(r => r.producte === code);
   // Una fila sense codis ni quantitats no és una recepta, encara que porti un comentari
   const hasRecipeData = r => SCHEMAS.recepta.fields.some(f => !["producte", "comentaris"].includes(f.key) && !isBlank(r[f.key]));
-  const newRecepta = (parsed.recepta || []).filter(hasRecipeData).map(r => {
-    const old = oldRecepta.find(o => sameRecipe(r, o));
+  const incoming = (parsed.recepta || []).filter(hasRecipeData);
+  // Amb una sola fila abans i després, és la mateixa recepta encara que la gravació en corregeixi el
+  // codi: si no, els grams desats es perdrien
+  const onlyRow = oldRecepta.length === 1 && incoming.length === 1 ? oldRecepta[0] : undefined;
+  const newRecepta = incoming.map(r => {
+    const old = oldRecepta.find(o => sameRecipe(r, o)) || onlyRow;
     const baseRow = (base?.recepta || []).find(b => sameRecipe(r, { ...b, producte: r.producte }));
     return old || isVariant ? fill("recepta", r, old || {}, baseRow) : r;
   });
 
   // Una gravació que no descriu cap recepta no pot deixar el producte sense la que ja tenia
-  return { ...parsed, productes, recepta: newRecepta.length ? newRecepta : oldRecepta };
+  // Els kg d'un pas d'una variant que la variant no ha dictat són els del base
+  const flux = isVariant
+    ? (parsed.flux || []).map(f => isBlank(f.massa) || dictated.has(Number(f.massa)) ? f : { ...f, massa: null })
+    : parsed.flux;
+
+  return { ...parsed, productes, flux, recepta: newRecepta.length ? newRecepta : oldRecepta };
 }
 
 const mergedRerun = (h, data, held) => {
@@ -649,9 +658,11 @@ Exemple del tipus de frase que dicta l'usuari:
   "necessitarem una M#### que seran 163,57 kg. La mescla final, que és la R####, seran 203,67 kg.
    I l'encolant, que és una altra M####, en necessitarem 21,01 kg."
   → La R#### és el farcit del producte: codi_farcit = R####, kg_farcit_palet = 203.67
-  → Les DUES M#### són matèries primeres d'aquesta R####: DUES files a la taula FARCIT,
-    amb kg_per_palet 163.57 i 21.01 respectivament.
-  → codi_massa i kg_massa_palet queden a null: de la massa (l'oblea) no n'ha dit ni el codi ni els kg.
+  → La primera M#### entra dins de la mescla: és matèria primera d'aquesta R####, una fila a FARCIT
+    amb kg_per_palet 163.57.
+  → L'ENCOLANT no entra mai dins del farcit: és a part, com la massa. codi_massa = aquella M####,
+    kg_massa_palet = 21.01, i una fila de RECEPTA amb aquest codi_massa i kg_massa_palet. Si el
+    producte ja té una altra massa, llista totes dues al codi_massa de PRODUCTES.
 Si descartes una d'aquestes M#### perquè "no hi cap" en cap camp, l'extracció és INCORRECTA:
 tot codi que l'usuari pronuncia ha d'acabar en alguna de les quatre taules.
 
@@ -826,7 +837,7 @@ CAMPS I FORMATS:
 - 'linia'                text   → NOMÉS el nom del recurs físic (màquina, zona, equip) que s'OCUPA en aquest pas (ex: "Olla mediana", "Freidora", "Turmix Grande / Balança"). El nom de la tasca va a 'accio', mai aquí.
                                    Si el recurs ja és a la llista de recursos disponibles, escriu-lo EXACTAMENT igual. Preparar carros, etiquetar o desembalar són tasques: si no ocupen cap màquina, 'linia' → null.
                                    null si el pas no ocupa cap recurs físic concret (esperes, controls, administratiu).
-- 'massa'                number → kg de massa/farcit del producte que intervenen en aquest pas. null si no aplica.
+- 'massa'                number → kg de massa/farcit del producte que intervenen en aquest pas (normalment els kg per palet dictats). MAI la quantitat de referència d'un ritme: a "45 minuts / 300 kg", el 300 va a 'temps_quantitat', no aquí. null si no aplica.
 - 'temps_per_kg'         text   → el temps TAL COM ES DIU, sense interpretar-lo (ex: "## minuts / ### kg", "## minuts", "### unidades / hora", "de 30 a 45 minuts"). null si no s'especifica.
 - 'minuts_min'           number → el mateix temps convertit a MINUTS. "1/4 d'hora" = 15, "3/4" = 45, "1:30 h" = 90.
 - 'minuts_max'           number → igual que minuts_min si és un sol valor. Si és un marge ("de mitja hora a 3/4"): minuts_min = 30 i minuts_max = 45.
@@ -863,10 +874,12 @@ EXEMPLE DE FORMAT (els codis hi surten com a PATRONS, no com a valors reals):
 ═══════════════════════════════════════════
 REGLES:
 ═══════════════════════════════════════════
-- MÚLTIPLES RECURSOS PARAL·LELS: si un pas pot fer-se en MÉS D'UN RECURS simultàniament, crea UNA FILA per cada recurs (mateix 'producte', 'pas', 'dia' i 'codi_intervinent').
+- MÚLTIPLES RECURSOS PARAL·LELS: si un pas OCUPA alhora MÉS D'UN RECURS, crea UNA FILA per cada recurs (mateix 'producte', 'pas', 'dia' i 'codi_intervinent').
+- RECURSOS ALTERNATIUS: si es pot fer en un recurs O en un altre ("a la línia 1 o la 2"), no és paral·lel: cada opció té el seu propi 'pas' i les opcions que no són la primera porten 'alternativa_de'. El mateix 'pas' en diversos recursos vol dir que s'ocupen tots alhora.
 - SUBPASSOS d'una mateixa matèria primera: usa sufix decimal al codi_intervinent (M#### → M####.1, M####.2...). El 'pas' segueix sent un índex global únic.
 - Inclou SEMPRE un pas final que representi la sortida/producte acabat (ex: "Encaixat / Paletització").
 - NOMÉS EL PROCÉS: les dades del producte (unitats per palet i per caixa, caixes per palet, pes de la unitat, kg totals de farcit o de massa per palet) les recull una altra extracció. No les repeteixis als 'comentaris' de cap pas, tret que siguin la capacitat o el límit d'aquell pas.
+- TEMPS PER RECURS: "10 minuts per cada olla" o "per cada fogó" no depèn de les unitats de producte: 'temps_unitat' = "fix" i el temps total = el temps per recurs × el nombre d'olles o fogons que es fan servir, si es dicta o es desprèn d'una capacitat dictada (els kg del producte superen el màxim d'una olla). Explica el càlcul a 'comentaris'. "unitat" vol dir NOMÉS una unitat de producte.
 - TEMPS COMPARTITS: abans d'assignar un temps, decideix si és de cada element o del conjunt. Si una enumeració continua amb "una altra hora" o "una tercera hora", les hores anteriors compten dins del mateix total: reparteix-les entre els elements, no les multipliquis.
 - DOSIFICADORS: cada dosificador que es dicta per al fabricat és un recurs ocupat: crea una fila "Dosificació" per a cadascun, amb 'linia' = "Dosificador Volumétrico #" si se'n dicta el número i "Dosificador" si no, i sense temps ni persones (són les del fabricat). A "dos dosificadors, 1 que dosifica una cosa i l'altre una altra", aquest 1 vol dir "un": no és el número del dosificador. Si es pot triar entre diversos ("l'1 o el 2"), una fila per opció, amb 'alternativa_de' apuntant a la primera. Un dosificador no és mai una "Màquina #": és un altre recurs.
 - CARROS BUITS: el pas de portar els carros buits al rentat depèn de l'encaixat, que és quan es buiden, no del fabricat.
@@ -959,6 +972,7 @@ INSTRUCCIONS:
 - Els números segueixen les mateixes regles de format que als prompts de veu (decimals per merma, etc.).
 - Conserva TOTS els camps de cada fila del base, també els de temps (minuts_min, minuts_max, temps_quantitat, temps_unitat), frequencia, minuts_abans_produccio, depen_de_pas i alternativa_de, i la numeració de 'pas'.
 - Els kg, els grams i les unitats per carro depenen del producte: mai els calculis ni proporcionis els del base. Si la variant té un altre pes o unes altres unitats i no els dicta, deixa a null 'kg_massa_palet', 'kg_farcit_palet', 'grams_per_unitat_farcit', 'grams_per_unit_massa', els kg de recepta, 'unitats_per_carro' i la 'massa' dels passos, i treu dels 'comentaris' les xifres del base que en depenguin. Si les dicta, actualitza-les.
+- ABANS DE RESPONDRE, si la variant canvia el pes o les unitats: repassa TOTS els 'comentaris' (producte, recepta i cada pas) i treu-ne qualsevol xifra del base que no hagi dictat la variant: grams, kg, unitats per safata, per carro, per caixa o per palet.
 - Si es dicta una altra velocitat o un altre temps, actualitza 'temps_per_kg' i els camps de temps. No recalculis cap temps que no s'hagi dictat: els ritmes del base (per exemple, minuts per kg) es conserven.
 - Si es dicten les unitats per carro o una restricció de línia, actualitza 'unitats_per_carro' i 'linies_permeses'.
 
